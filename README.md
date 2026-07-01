@@ -23,9 +23,9 @@ Xbox 360 controller → keyboard input mapper designed for J2ME emulators (KEmul
   - [MainWindow](#mainwindow)
   - [OverlayWindow](#overlaywindow)
 - [Configuration Files](#configuration-files)
-- [DPAD Modes](#dpad-modes)
+- **[DPAD Modes GIF](#dpad-modes)**
 - [Button Mappings](#button-mappings)
-- [OSD Behavior](#osd-behavior)
+- **[OSD Behavior GIF](#osd-behavior)**
 - [Profile System](#profile-system)
 - [Keys Reference Window](#keys-reference-window)
 - [Build Instructions](#build-instructions)
