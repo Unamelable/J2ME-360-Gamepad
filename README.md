@@ -458,7 +458,9 @@ Three modes cycled via View/Back (or gamepad start for profiles):
 **Diagonal Delay** (0-300ms, 0 = off, excludes PAD mode):
 - Works in PAD+DIAGONAL and KEYPAD modes.
 - **Hold cardinal keys (default OFF)**: cardinal arrow/numpad keys held during delay, then atomically swapped to diagonal key via `SwapPadKeys`.
+- <img width="266" height="336" alt="J2ME_360_Gamepad_ipOMZ4fo1K" src="https://github.com/user-attachments/assets/4ab1d665-b319-4acc-83fa-1d0224723618" />
 - **Hold cardinal keys OFF**: no output during delay, diagonal key pressed after delay.
+- <img width="271" height="331" alt="J2ME_360_Gamepad_tvXemuVPVp" src="https://github.com/user-attachments/assets/42f4f263-245b-4213-b55a-bb2705b3f6ff" />
 - **Save per profile (default OFF)**: stores/loads delay from profile JSON; when off, global slider value persists across profile switches.
 
 ---
