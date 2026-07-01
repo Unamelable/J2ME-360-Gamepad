@@ -343,12 +343,13 @@ Entry point, inherits `Application`.
 
 | Method | Description |
 |--------|-------------|
-| `OnStartup(...)` | Creates a named `Mutex` to enforce single-instance. If another instance is running, shows a MessageBox and shuts down. Otherwise sets process priority to `BelowNormal`, creates and shows `MainWindow`. |
+| `OnStartup(...)` | Creates a named `Mutex` to enforce single-instance. If another instance is running, shows a MessageBox and shuts down. Otherwise sets process priority to `BelowNormal`, creates and shows `MainWindow`. <img width="288" height="150" alt="image" src="https://github.com/user-attachments/assets/65b54d8e-17f3-4e78-ab2b-d83d74cdb6a7" /> |
 | `OnExit(...)` | Disposes the mutex. |
 
 ### MainWindow
 
 Main configuration window. Fixed 690×520 `ToolWindow`, `NoResize`.
+<img width="674" height="511" alt="Overview" src="https://github.com/user-attachments/assets/030f3ced-5aae-45ef-a623-0342d8fa2c02" />
 
 **Constructor**: Initializes all services (`KeyboardInjector`, `ProfileManager`, `GamepadPoller`, `ControllerWatchdog`, `OverlayWindow`), creates the `NotifyIcon` tray icon with "Exit" and "Show" context menu items, wires all service events, calls `RefreshProfileList()`, hooks `Loaded` and `Closed` events.
 
@@ -448,8 +449,11 @@ Three modes cycled via View/Back (or gamepad start for profiles):
 | Mode | Cardinal Directions | Diagonal Directions |
 |------|-------------------|-------------------|
 | **PAD** | Arrow Up / Down / Left / Right | Not supported — traditional gamepad mode. |
+| <img width="240" height="155" alt="J2ME_360_Gamepad_2aNPdydz44" src="https://github.com/user-attachments/assets/85f2d4e2-53f3-4af5-b870-3486e67017bf" /> |
 | **KEYPAD** | Numpad 8 / 2 / 4 / 6 | Numpad 7 / 9 / 1 / 3 (no delay support on these). |
+| <img width="262" height="341" alt="J2ME_360_Gamepad_sagW8nfbkx" src="https://github.com/user-attachments/assets/6563dd8b-08de-4bb4-b151-8b724475898d" /> |
 | **PAD+DIAGONAL** | Arrow Up / Down / Left / Right | Numpad 7 / 9 / 1 / 3 only (arrows NOT sent for diagonals). |
+| <img width="376" height="404" alt="J2ME_360_Gamepad_4PtmcV0KAQ" src="https://github.com/user-attachments/assets/bad07610-f268-4229-aabc-dec861c17cd2" /> |
 
 **Diagonal Delay** (0-300ms, 0 = off, excludes PAD mode):
 - Works in PAD+DIAGONAL and KEYPAD modes.
@@ -485,8 +489,11 @@ All action buttons use **hold behavior** (press on down, release on up), not tap
 | Trigger | Animation | Duration |
 |---------|-----------|----------|
 | DPAD mode change | Fade in → hold → fade out | ~1.5s |
+| <img width="406" height="91" alt="J2ME_360_Gamepad_P91RvCiao7" src="https://github.com/user-attachments/assets/8896287d-f4a3-4f9e-b103-626269931692" /> |
 | Profile swap (via gamepad) | Crossfade old name → new name | ~1.5s |
+| <img width="296" height="84" alt="J2ME_360_Gamepad_63MoLAmaGv" src="https://github.com/user-attachments/assets/0598ee6f-2113-48af-a84c-94a5458af455" /> |
 | Controller disconnected | Infinite yellow pulse (0→0.8→0) | 2.5s per cycle |
+| <img width="356" height="64" alt="J2ME_360_Gamepad_K5cyqFXAcK" src="https://github.com/user-attachments/assets/90300b3c-b334-4f15-bcfd-f27c90b3ab21" /> |
 | Controller reconnected | Immediate hide | Instant |
 
 `ClearAnimations()` is called before every OSD operation. It uses `BeginAnimation(OpacityProperty, null)` on all three animated elements (`DisconnectedBorder`, `OsdBorder`, `OsdText`) to unconditionally clear any animated property values left by previous storyboards.
@@ -509,6 +516,9 @@ All action buttons use **hold behavior** (press on down, release on up), not tap
 ---
 
 ## Keys Reference Window
+
+<img width="578" height="677" alt="image" src="https://github.com/user-attachments/assets/d6b247c2-00b8-4005-a079-ebaa12e2f2b0" />
+
 
 - Embedded as assembly resource (`KEys.txt`), shipped inside the EXE
 - Black window, green Consolas text, black background
