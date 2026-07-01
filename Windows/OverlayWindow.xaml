@@ -1,0 +1,55 @@
+<Window x:Class="J2MEGamepad.Windows.OverlayWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="J2ME 360 Gamepad OSD"
+        WindowStyle="None"
+        AllowsTransparency="True"
+        Background="Transparent"
+        ShowInTaskbar="False"
+        Topmost="True"
+        WindowState="Maximized"
+        IsHitTestVisible="False"
+        ResizeMode="NoResize"
+        Left="0"
+        Top="0">
+    <Grid>
+        <Border x:Name="DisconnectedBorder"
+                HorizontalAlignment="Stretch"
+                VerticalAlignment="Stretch"
+                Background="#00000000"
+                Opacity="0">
+            <Border HorizontalAlignment="Center"
+                    VerticalAlignment="Center"
+                    Background="#80333300"
+                    CornerRadius="8"
+                    Padding="30,15">
+                <TextBlock x:Name="DisconnectedText"
+                           Foreground="Yellow"
+                           FontSize="32"
+                           FontWeight="Bold"
+                           HorizontalAlignment="Center"
+                           VerticalAlignment="Center"
+                           Text="XBOX 360 CONTROLLER NOT DETECTED"
+                           TextAlignment="Center"
+                           TextWrapping="Wrap" />
+            </Border>
+        </Border>
+
+        <Border x:Name="OsdBorder"
+                HorizontalAlignment="Center"
+                VerticalAlignment="Center"
+                Background="#80000000"
+                CornerRadius="8"
+                Padding="20,10"
+                Opacity="0">
+            <TextBlock x:Name="OsdText"
+                       Foreground="White"
+                       FontSize="28"
+                       FontWeight="Bold"
+                       HorizontalAlignment="Center"
+                       VerticalAlignment="Center"
+                       Text=""
+                       TextAlignment="Center" />
+        </Border>
+    </Grid>
+</Window>

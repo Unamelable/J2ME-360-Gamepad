@@ -1,0 +1,21 @@
+C:\Projects\J2ME_gamepad\J2MEGamepad\bin\Debug\net8.0-windows\J2ME 360 Gamepad.exe
+C:\Projects\J2ME_gamepad\J2MEGamepad\bin\Debug\net8.0-windows\J2ME 360 Gamepad.deps.json
+C:\Projects\J2ME_gamepad\J2MEGamepad\bin\Debug\net8.0-windows\J2ME 360 Gamepad.runtimeconfig.json
+C:\Projects\J2ME_gamepad\J2MEGamepad\bin\Debug\net8.0-windows\J2ME 360 Gamepad.dll
+C:\Projects\J2ME_gamepad\J2MEGamepad\bin\Debug\net8.0-windows\J2ME 360 Gamepad.pdb
+C:\Projects\J2ME_gamepad\J2MEGamepad\obj\Debug\net8.0-windows\Windows\MainWindow.baml
+C:\Projects\J2ME_gamepad\J2MEGamepad\obj\Debug\net8.0-windows\Windows\OverlayWindow.baml
+C:\Projects\J2ME_gamepad\J2MEGamepad\obj\Debug\net8.0-windows\Windows\MainWindow.g.cs
+C:\Projects\J2ME_gamepad\J2MEGamepad\obj\Debug\net8.0-windows\Windows\OverlayWindow.g.cs
+C:\Projects\J2ME_gamepad\J2MEGamepad\obj\Debug\net8.0-windows\App.g.cs
+C:\Projects\J2ME_gamepad\J2MEGamepad\obj\Debug\net8.0-windows\J2ME 360 Gamepad_MarkupCompile.cache
+C:\Projects\J2ME_gamepad\J2MEGamepad\obj\Debug\net8.0-windows\J2ME 360 Gamepad.g.resources
+C:\Projects\J2ME_gamepad\J2MEGamepad\obj\Debug\net8.0-windows\J2MEGamepad.GeneratedMSBuildEditorConfig.editorconfig
+C:\Projects\J2ME_gamepad\J2MEGamepad\obj\Debug\net8.0-windows\J2MEGamepad.AssemblyInfoInputs.cache
+C:\Projects\J2ME_gamepad\J2MEGamepad\obj\Debug\net8.0-windows\J2MEGamepad.AssemblyInfo.cs
+C:\Projects\J2ME_gamepad\J2MEGamepad\obj\Debug\net8.0-windows\J2MEGamepad.csproj.CoreCompileInputs.cache
+C:\Projects\J2ME_gamepad\J2MEGamepad\obj\Debug\net8.0-windows\J2ME 360 Gamepad.dll
+C:\Projects\J2ME_gamepad\J2MEGamepad\obj\Debug\net8.0-windows\refint\J2ME 360 Gamepad.dll
+C:\Projects\J2ME_gamepad\J2MEGamepad\obj\Debug\net8.0-windows\J2ME 360 Gamepad.pdb
+C:\Projects\J2ME_gamepad\J2MEGamepad\obj\Debug\net8.0-windows\J2MEGamepad.genruntimeconfig.cache
+C:\Projects\J2ME_gamepad\J2MEGamepad\obj\Debug\net8.0-windows\ref\J2ME 360 Gamepad.dll
