@@ -1,18 +1,38 @@
 using System;
+using System.Collections.Generic;
+using System.Diagnostics;
 using System.IO;
 using System.Linq;
 using System.Reflection;
+using System.Runtime.InteropServices;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Input;
+using System.Windows.Interop;
 using System.Windows.Media;
+using System.Windows.Media.Animation;
+using System.Windows.Threading;
 using J2MEGamepad.Models;
+using J2MEGamepad.NativeMethods;
 using J2MEGamepad.Services;
 
 namespace J2MEGamepad.Windows;
 
 public partial class MainWindow : Window
 {
+    private static readonly Brush s_defaultButtonBrush = new SolidColorBrush(Color.FromRgb(0xEE, 0xEE, 0xEE));
+
+    private const int WM_HOTKEY = 0x0312;
+    private const int HOTKEY_ID_RESTART = 1;
+    private const int MOD_CONTROL = 0x0002;
+    private const int MOD_NOREPEAT = 0x4000;
+
+    [DllImport("user32.dll", SetLastError = true)]
+    private static extern bool RegisterHotKey(IntPtr hWnd, int id, uint fsModifiers, uint vk);
+
+    [DllImport("user32.dll", SetLastError = true)]
+    private static extern bool UnregisterHotKey(IntPtr hWnd, int id);
+
     private readonly GamepadPoller _poller;
     private readonly KeyboardInjector _keyboard;
     private readonly ProfileManager _profiles;
@@ -23,6 +43,15 @@ public partial class MainWindow : Window
     private string? _selectedKeyName;
     private string _lastProfileName = "Default";
     private bool _customKeyWarningShown;
+    private bool _savedDelayHoldState = true;
+    private bool _isDInputMode;
+    private bool _isDInputRemapping;
+    private string _dinputRemapAction = "";
+    private Storyboard? _remapFadeAnimation;
+    private bool _isDInputCapturingButton;
+    private string _lastControllerName = "";
+    private DInputMapping _dinputMapping = new();
+    private readonly System.Windows.Threading.DispatcherTimer _disconnectTimer;
 
     public MainWindow()
     {
@@ -33,6 +62,12 @@ public partial class MainWindow : Window
         _poller = new GamepadPoller(_keyboard, _profiles);
         _watchdog = new ControllerWatchdog();
         _overlay = new OverlayWindow();
+
+        _disconnectTimer = new System.Windows.Threading.DispatcherTimer
+        {
+            Interval = TimeSpan.FromSeconds(60)
+        };
+        _disconnectTimer.Tick += DisconnectTimer_Tick;
 
         _trayIcon = new System.Windows.Forms.NotifyIcon
         {
@@ -56,6 +91,8 @@ public partial class MainWindow : Window
         _poller.ModeChanged += OnModeChanged;
         _poller.ConnectionChanged += OnConnectionChanged;
         _poller.BackCyclesToggled += OnBackCyclesToggled;
+        _poller.DInputModeChanged += OnDInputModeChanged;
+        _poller.DInputButtonPressed += OnDInputButtonPressed;
         _profiles.ProfilesChanged += OnProfilesChanged;
 
         RefreshProfileList();
@@ -64,39 +101,95 @@ public partial class MainWindow : Window
         Closed += OnClosed;
     }
 
+    private void LogInfo(string msg)
+    {
+        LogHelper.Info("MainWindow", msg);
+    }
+
     private void OnLoaded(object sender, RoutedEventArgs e)
     {
-        _overlay.Show();
+        LogInfo("OnLoaded entered");
 
-        _lastProfileName = _profiles.CurrentProfile.Name;
-
-        var settingsDir = Path.Combine(
-            Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData),
-            "J2MEGamepad");
-        Directory.CreateDirectory(settingsDir);
-        var diagFile = Path.Combine(settingsDir, "diagdelay.txt");
-        if (File.Exists(diagFile) && int.TryParse(File.ReadAllText(diagFile).Trim(), out int savedDiag))
+        try
         {
-            savedDiag = Math.Clamp(savedDiag, 0, 300);
-            DiagDelaySlider.Value = savedDiag;
-            _poller.DiagonalDelayMs = savedDiag;
-            DiagDelayValue.Text = savedDiag == 0 ? "Off" : savedDiag.ToString();
+            // Signal to startup watchdog that the window loaded successfully
+            if (Application.Current is App app)
+            {
+                app.SignalWindowReady();
+                LogInfo("SignalWindowReady called");
+            }
+            else
+                LogInfo("SignalWindowReady FAILED: Application.Current is not App");
+
+            // Force window to be visible and focused
+            Activate();
+
+            // Register CTRL+R global hotkey for restart
+            var hwnd = new WindowInteropHelper(this).Handle;
+            RegisterHotKey(hwnd, HOTKEY_ID_RESTART, MOD_CONTROL | MOD_NOREPEAT, 0x52); // 0x52 = 'R'
+
+            LogInfo("Showing overlay...");
+            _overlay.Show();
+
+            _lastProfileName = _profiles.CurrentProfile.Name;
+
+            var settingsDir = Path.Combine(
+                Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData),
+                "J2MEGamepad");
+            Directory.CreateDirectory(settingsDir);
+            var diagFile = Path.Combine(settingsDir, "diagdelay.txt");
+            if (File.Exists(diagFile) && int.TryParse(File.ReadAllText(diagFile).Trim(), out int savedDiag))
+            {
+                savedDiag = Math.Clamp(savedDiag, 0, 300);
+                DiagDelaySlider.Value = savedDiag;
+                _poller.DiagonalDelayMs = savedDiag;
+                DiagDelayValue.Text = savedDiag == 0 ? "Off" : savedDiag.ToString();
+            }
+            var holdFile = Path.Combine(settingsDir, "diaghold.txt");
+            if (File.Exists(holdFile) && bool.TryParse(File.ReadAllText(holdFile).Trim(), out bool savedHold))
+            {
+                DiagDelayHoldCheckbox.IsChecked = savedHold;
+                _poller.DiagonalDelayHoldCardinals = savedHold;
+            }
+            var perProfileFile = Path.Combine(settingsDir, "diagperprofile.txt");
+            if (File.Exists(perProfileFile) && bool.TryParse(File.ReadAllText(perProfileFile).Trim(), out bool savedPerProfile))
+                DiagDelayPerProfileCheckbox.IsChecked = savedPerProfile;
+
+            var dirDelayFile = Path.Combine(settingsDir, "directional_delay.txt");
+            if (File.Exists(dirDelayFile) && int.TryParse(File.ReadAllText(dirDelayFile).Trim(), out int savedDirDelay))
+            {
+                savedDirDelay = Math.Clamp(savedDirDelay, 0, 300);
+                DirDelaySlider.Value = savedDirDelay;
+                _poller.DirectionalDelayMs = savedDirDelay;
+                DirDelayValue.Text = savedDirDelay == 0 ? "Off" : savedDirDelay.ToString();
+                if (savedDirDelay > 0)
+                {
+                    _savedDelayHoldState = DiagDelayHoldCheckbox.IsChecked == true;
+                    DiagDelayHoldCheckbox.IsChecked = false;
+                    DiagDelayHoldCheckbox.IsEnabled = false;
+                }
+            }
+            ApplyDiagonalDelayFromProfile();
+
+            // Load DInput deadzone from calibration
+            var cal = DInputCalibration.Load();
+            DInputDeadzoneSlider.Value = cal.DeadzonePercent;
+            DInputDeadzoneValue.Text = $"{cal.DeadzonePercent}%";
+            _poller.ReloadCalibration();
+
+            ShowFirstRunWarning();
+
+            LogInfo("Starting watchdog and poller...");
+            _watchdog.Start();
+            _poller.Start();
+            LogInfo("OnLoaded complete successfully");
         }
-        var holdFile = Path.Combine(settingsDir, "diaghold.txt");
-        if (File.Exists(holdFile) && bool.TryParse(File.ReadAllText(holdFile).Trim(), out bool savedHold))
+        catch (Exception ex)
         {
-            DiagDelayHoldCheckbox.IsChecked = savedHold;
-            _poller.DiagonalDelayHoldCardinals = savedHold;
+            LogInfo($"OnLoaded exception: {ex.Message}\n{ex.StackTrace}");
+            MessageBox.Show($"Startup error:\n{ex.Message}\n\nDetails saved to crash.log.",
+                "Startup Error", MessageBoxButton.OK, MessageBoxImage.Error);
         }
-        var perProfileFile = Path.Combine(settingsDir, "diagperprofile.txt");
-        if (File.Exists(perProfileFile) && bool.TryParse(File.ReadAllText(perProfileFile).Trim(), out bool savedPerProfile))
-            DiagDelayPerProfileCheckbox.IsChecked = savedPerProfile;
-
-        ApplyDiagonalDelayFromProfile();
-        ShowFirstRunWarning();
-
-        _watchdog.Start();
-        _poller.Start();
     }
 
     private void ShowFirstRunWarning()
@@ -168,6 +261,14 @@ public partial class MainWindow : Window
 
     private void OnClosed(object? sender, EventArgs e)
     {
+        // Unregister CTRL+R hotkey
+        try
+        {
+            var hwnd = new WindowInteropHelper(this).Handle;
+            UnregisterHotKey(hwnd, HOTKEY_ID_RESTART);
+        }
+        catch { }
+
         var settingsDir = Path.Combine(
             Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData),
             "J2MEGamepad");
@@ -178,13 +279,78 @@ public partial class MainWindow : Window
             DiagDelayHoldCheckbox.IsChecked.ToString());
         File.WriteAllText(Path.Combine(settingsDir, "diagperprofile.txt"),
             DiagDelayPerProfileCheckbox.IsChecked.ToString());
+        File.WriteAllText(Path.Combine(settingsDir, "directional_delay.txt"),
+            ((int)DirDelaySlider.Value).ToString());
 
+        if (DiagDelayPerProfileCheckbox.IsChecked == true)
+        {
+            _profiles.CurrentProfile.DiagonalDelayHoldCardinals = DiagDelayHoldCheckbox.IsChecked == true;
+            _profiles.SaveProfile(_profiles.CurrentProfile);
+        }
+
+        StopDInputRemapAnimation();
+        _disconnectTimer.Stop();
+        _disconnectTimer.Tick -= DisconnectTimer_Tick;
         _poller.Dispose();
         _watchdog.Dispose();
         _keyboard.Dispose();
         _profiles.Dispose();
         _trayIcon.Dispose();
         _overlay.Close();
+    }
+
+    protected override void OnSourceInitialized(EventArgs e)
+    {
+        base.OnSourceInitialized(e);
+        var hwnd = new WindowInteropHelper(this).Handle;
+        var source = HwndSource.FromHwnd(hwnd);
+        source?.AddHook(WndProc);
+    }
+
+    private IntPtr WndProc(IntPtr hwnd, int msg, IntPtr wParam, IntPtr lParam, ref bool handled)
+    {
+        if (msg == WM_HOTKEY && wParam.ToInt32() == HOTKEY_ID_RESTART)
+        {
+            RestartApplication();
+            handled = true;
+        }
+        return IntPtr.Zero;
+    }
+
+    private void RestartApplication()
+    {
+        LogInfo("CTRL+R restart requested");
+        try
+        {
+            StopDInputRemapAnimation();
+            _disconnectTimer.Stop();
+            _disconnectTimer.Tick -= DisconnectTimer_Tick;
+            _poller.Dispose();
+            _watchdog.Dispose();
+            _keyboard.Dispose();
+            _profiles.Dispose();
+            _trayIcon.Visible = false;
+            _trayIcon.Dispose();
+            _overlay.Close();
+
+            // Release mutex so the new instance can acquire it
+            if (Application.Current is App app)
+                app.ReleaseMutexForRestart();
+
+            // Start new instance
+            var exePath = Process.GetCurrentProcess().MainModule?.FileName;
+            if (!string.IsNullOrEmpty(exePath))
+                Process.Start(exePath);
+
+            // Use Environment.Exit to bypass OnClosed and avoid duplicate dispose
+            Environment.Exit(0);
+        }
+        catch (Exception ex)
+        {
+            LogHelper.Error("MainWindow", "RestartApplication", ex);
+            MessageBox.Show($"Restart failed: {ex.Message}", "Error",
+                MessageBoxButton.OK, MessageBoxImage.Error);
+        }
     }
 
     private void DiagDelaySlider_ValueChanged(object sender, RoutedPropertyChangedEventArgs<double> e)
@@ -195,10 +361,26 @@ public partial class MainWindow : Window
         DiagDelayValue.Text = val == 0 ? "Off" : val.ToString();
     }
 
+    private void DInputDeadzoneSlider_ValueChanged(object sender, RoutedPropertyChangedEventArgs<double> e)
+    {
+        int pct = Math.Clamp((int)DInputDeadzoneSlider.Value, 10, 80);
+        if (DInputDeadzoneValue == null) return;
+        DInputDeadzoneValue.Text = $"{pct}%";
+        var cal = DInputCalibration.Load();
+        cal.DeadzonePercent = pct;
+        cal.Save();
+        _poller?.ReloadCalibration();
+    }
+
     private void DiagDelayHold_Changed(object sender, RoutedEventArgs e)
     {
         if (_poller == null) return;
-        _poller.DiagonalDelayHoldCardinals = DiagDelayHoldCheckbox.IsChecked == true;
+        bool hold = DiagDelayHoldCheckbox.IsChecked == true;
+        _poller.DiagonalDelayHoldCardinals = hold;
+        if (DiagDelayHoldCheckbox.IsEnabled)
+            _savedDelayHoldState = hold;
+        if (DiagDelayPerProfileCheckbox.IsChecked == true)
+            _profiles.CurrentProfile.DiagonalDelayHoldCardinals = hold;
     }
 
     private void DiagDelayPerProfile_Changed(object sender, RoutedEventArgs e)
@@ -207,15 +389,55 @@ public partial class MainWindow : Window
         ApplyDiagonalDelayFromProfile();
     }
 
-    private void ApplyDiagonalDelayFromProfile()
+    private void DirDelaySlider_ValueChanged(object sender, RoutedPropertyChangedEventArgs<double> e)
     {
+        if (_poller == null) return;
+        int val = (int)DirDelaySlider.Value;
+        _poller.DirectionalDelayMs = val;
+        DirDelayValue.Text = val == 0 ? "Off" : val.ToString();
+
         if (DiagDelayPerProfileCheckbox.IsChecked == true)
         {
-            int delayMs = _profiles.CurrentProfile.DiagonalDelayMs;
-            DiagDelaySlider.Value = delayMs;
-            _poller.DiagonalDelayMs = delayMs;
-            DiagDelayValue.Text = delayMs == 0 ? "Off" : delayMs.ToString();
+            _profiles.CurrentProfile.DirectionalDelayMs = val;
+            DiagDelayHoldCheckbox.IsEnabled = val == 0;
+            return;
         }
+
+        if (val > 0 && DiagDelayHoldCheckbox.IsEnabled)
+        {
+            _savedDelayHoldState = DiagDelayHoldCheckbox.IsChecked == true;
+            DiagDelayHoldCheckbox.IsChecked = false;
+            DiagDelayHoldCheckbox.IsEnabled = false;
+        }
+        else if (val == 0)
+        {
+            DiagDelayHoldCheckbox.IsEnabled = true;
+            DiagDelayHoldCheckbox.IsChecked = _savedDelayHoldState;
+        }
+    }
+
+    private void ApplyDiagonalDelayFromProfile()
+    {
+        if (DiagDelayPerProfileCheckbox.IsChecked != true)
+            return;
+
+        var profile = _profiles.CurrentProfile;
+
+        int delayMs = profile.DiagonalDelayMs;
+        DiagDelaySlider.Value = delayMs;
+        _poller.DiagonalDelayMs = delayMs;
+        DiagDelayValue.Text = delayMs == 0 ? "Off" : delayMs.ToString();
+
+        int dirDelayMs = profile.DirectionalDelayMs;
+        DirDelaySlider.Value = dirDelayMs;
+        _poller.DirectionalDelayMs = dirDelayMs;
+        DirDelayValue.Text = dirDelayMs == 0 ? "Off" : dirDelayMs.ToString();
+
+        // Restore hold cardinal state from profile (overrides DirDelaySlider_ValueChanged side-effects)
+        bool hold = profile.DiagonalDelayHoldCardinals;
+        _poller.DiagonalDelayHoldCardinals = hold;
+        DiagDelayHoldCheckbox.IsChecked = hold;
+        DiagDelayHoldCheckbox.IsEnabled = dirDelayMs == 0;
     }
 
     private void OnProfilesChanged()
@@ -240,9 +462,20 @@ public partial class MainWindow : Window
     {
         Dispatcher.Invoke(() =>
         {
+            _disconnectTimer.Stop();
             _overlay.HideDisconnected();
-            ControllerStatus.Text = "Controller connected";
-            ControllerStatus.Foreground = System.Windows.Media.Brushes.Green;
+            if (_isDInputMode)
+            {
+                _lastControllerName = GetDInputDeviceName();
+                ControllerStatus.Text = $"{_lastControllerName} connected";
+                ControllerStatus.Foreground = System.Windows.Media.Brushes.Orange;
+            }
+            else
+            {
+                _lastControllerName = "Xbox 360 Controller";
+                ControllerStatus.Text = $"{_lastControllerName} connected";
+                ControllerStatus.Foreground = System.Windows.Media.Brushes.Green;
+            }
         });
     }
 
@@ -250,9 +483,18 @@ public partial class MainWindow : Window
     {
         Dispatcher.Invoke(() =>
         {
-            ControllerStatus.Text = "Please connect Xbox 360 Controller";
+            if (_isDInputMode) return;
+            _isDInputMode = false;
+            DInputActionPanel.Visibility = Visibility.Collapsed;
+            DInputDeadzonePanel.Visibility = Visibility.Collapsed;
+            StopDInputRemapAnimation();
+            _isDInputCapturingButton = false;
+            _isDInputRemapping = false;
+            _dinputRemapAction = "";
+            _poller.IsRemapping = false;
+            DInputRemapButton.Content = "Remap button";
+            ControllerStatus.Text = "Please connect Xbox/DInput controller";
             ControllerStatus.Foreground = System.Windows.Media.Brushes.Red;
-            ShowDisconnectedWarning();
         });
     }
 
@@ -262,23 +504,159 @@ public partial class MainWindow : Window
         {
             if (connected)
             {
+                _disconnectTimer.Stop();
                 _overlay.HideDisconnected();
-                ControllerStatus.Text = "Controller connected";
-                ControllerStatus.Foreground = System.Windows.Media.Brushes.Green;
+                if (_isDInputMode)
+                {
+                    _lastControllerName = GetDInputDeviceName();
+                    ControllerStatus.Text = $"{_lastControllerName} connected";
+                    ControllerStatus.Foreground = System.Windows.Media.Brushes.Orange;
+                    DInputActionPanel.Visibility = Visibility.Visible;
+                    DInputDeadzonePanel.Visibility = Visibility.Visible;
+                    ShowDInputListItems(true);
+                    UpdateDInputListLabels();
+                }
+                else
+                {
+                    _lastControllerName = "Xbox 360 Controller";
+                    ControllerStatus.Text = $"{_lastControllerName} connected";
+                    ControllerStatus.Foreground = System.Windows.Media.Brushes.Green;
+                    DInputActionPanel.Visibility = Visibility.Collapsed;
+                    DInputDeadzonePanel.Visibility = Visibility.Collapsed;
+                    ShowDInputListItems(false);
+                }
             }
             else
             {
-                ControllerStatus.Text = "Please connect Xbox 360 Controller";
+                _isDInputMode = false;
+                DInputActionPanel.Visibility = Visibility.Collapsed;
+                DInputDeadzonePanel.Visibility = Visibility.Collapsed;
+                ShowDInputListItems(false);
+                StopDInputRemapAnimation();
+                _isDInputCapturingButton = false;
+                _isDInputRemapping = false;
+                _dinputRemapAction = "";
+                _poller.IsRemapping = false;
+                DInputRemapButton.Content = "Remap button";
+                ControllerStatus.Text = "Please connect Xbox/DInput controller";
                 ControllerStatus.Foreground = System.Windows.Media.Brushes.Red;
                 ShowDisconnectedWarning();
             }
         });
     }
 
+    private void OnDInputModeChanged(string mode)
+    {
+        Dispatcher.Invoke(() =>
+        {
+            _isDInputMode = true;
+            DInputActionPanel.Visibility = Visibility.Visible;
+            DInputDeadzonePanel.Visibility = Visibility.Visible;
+            _lastControllerName = GetDInputDeviceName();
+            ControllerStatus.Text = $"{_lastControllerName} connected";
+            ControllerStatus.Foreground = System.Windows.Media.Brushes.Orange;
+            _overlay.HideDisconnected();
+            ShowDInputListItems(true);
+            UpdateDInputListLabels();
+        });
+    }
+
+    private void ShowDInputListItems(bool show)
+    {
+        var vis = show ? Visibility.Visible : Visibility.Collapsed;
+        DInputBackItem.Visibility = vis;
+        DInputStartItem.Visibility = vis;
+        DInputDpadUpItem.Visibility = vis;
+        DInputDpadDownItem.Visibility = vis;
+        DInputDpadLeftItem.Visibility = vis;
+        DInputDpadRightItem.Visibility = vis;
+        if (!show)
+        {
+            // Restore XInput labels when switching away from DInput
+            RestoreXInputListLabels();
+            if (KeyListBox.SelectedItem is ListBoxItem item &&
+                (item.Tag as string) is string tag &&
+                (tag == "Back" || tag == "Start" || tag.StartsWith("DPad")))
+            {
+                KeyListBox.SelectedItem = null;
+                _selectedKeyName = null;
+                UpdateCurrentMappingDisplay();
+            }
+        }
+    }
+
+    private static readonly Dictionary<string, int> DInputButtonIndices = new()
+    {
+        ["X"] = 0, ["A"] = 1, ["B"] = 2, ["Y"] = 3,
+        ["LB"] = 4, ["RB"] = 5, ["LT"] = 6, ["RT"] = 7,
+        ["RightThumb"] = 11,
+        ["Back"] = 8, ["Start"] = 9, ["LeftThumb"] = 10,
+        ["DPadUp"] = 12, ["DPadDown"] = 13, ["DPadLeft"] = 14, ["DPadRight"] = 15,
+    };
+
+    private void UpdateDInputListLabels()
+    {
+        ReloadDInputMapping();
+        var mapping = _dinputMapping;
+
+        foreach (ListBoxItem item in KeyListBox.Items)
+        {
+            if (item.Tag is string tag && DInputButtonIndices.TryGetValue(tag, out int _))
+            {
+                if (mapping.ActionToButton.TryGetValue(tag, out int actualIdx))
+                    item.Content = $"{tag} ({actualIdx + 1})";
+                else
+                    item.Content = $"{tag} (N/A)";
+            }
+        }
+    }
+
+    private void RestoreXInputListLabels()
+    {
+        foreach (ListBoxItem item in KeyListBox.Items)
+        {
+            if (item.Tag is string tag)
+            {
+                item.Content = tag switch
+                {
+                    "Y" => "Y Button",
+                    "X" => "X Button",
+                    "A" => "A Button",
+                    "B" => "B Button",
+                    "LB" => "LB",
+                    "RB" => "RB",
+                    "LT" => "LT",
+                    "RT" => "RT",
+                    "RightThumb" => "Right Stick Button",
+                    "Back" => "SELECT (Back)",
+                    "Start" => "START",
+                    "DPadUp" => "D-Pad Up",
+                    "DPadDown" => "D-Pad Down",
+                    "DPadLeft" => "D-Pad Left",
+                    "DPadRight" => "D-Pad Right",
+                    _ => (string)item.Content
+                };
+            }
+        }
+    }
+
     private void ShowDisconnectedWarning()
     {
+        _disconnectTimer.Stop();
         _overlay.Show();
+        string msg = string.IsNullOrEmpty(_lastControllerName)
+            ? "CONTROLLER NOT DETECTED"
+            : $"{_lastControllerName.ToUpperInvariant()}\nNOT DETECTED";
+        _overlay.SetDisconnectedText(msg);
         _overlay.ShowDisconnected();
+        _lastControllerName = "";
+        _disconnectTimer.Start();
+    }
+
+    private void DisconnectTimer_Tick(object? sender, EventArgs e)
+    {
+        _disconnectTimer.Stop();
+        _overlay.SetDisconnectedText("WAITING FOR CONTROLLER...");
     }
 
     private void OnModeChanged(string modeName)
@@ -310,12 +688,497 @@ public partial class MainWindow : Window
         });
     }
 
+    private void OnDInputButtonPressed(int buttonIndex)
+    {
+        string capturedAction = _dinputRemapAction;
+        Dispatcher.Invoke(() =>
+        {
+            if (!_isDInputRemapping || string.IsNullOrEmpty(capturedAction))
+                return;
+
+            StopDInputRemapAnimation();
+            _isDInputRemapping = false;
+            _isDInputCapturingButton = false;
+            _dinputRemapAction = "";
+
+            ReloadDInputMapping();
+            var mapping = _dinputMapping;
+
+            bool conflict = false;
+            string? conflictAction = null;
+            foreach (var kvp in mapping.ActionToButton)
+            {
+                if (kvp.Value == buttonIndex && kvp.Key != capturedAction)
+                {
+                    conflict = true;
+                    conflictAction = kvp.Key;
+                    break;
+                }
+            }
+
+            if (conflict && conflictAction != null)
+                mapping.ActionToButton.Remove(conflictAction);
+
+            mapping.ActionToButton[capturedAction] = buttonIndex;
+            mapping.Save();
+
+            _poller.ReloadDInputMapping();
+
+            string suffix = conflict ? $" (unmapped \"{conflictAction}\")" : "";
+            DInputRemapButton.Content = $"Button {buttonIndex + 1}{suffix}";
+            DInputRemapButton.Background = s_defaultButtonBrush;
+
+            UpdateCurrentMappingDisplay();
+            UpdateDInputListLabels();
+        });
+    }
+
+    private void DInputRemapButton_Click(object sender, RoutedEventArgs e)
+    {
+        if (!_isDInputMode)
+            return;
+
+        if (KeyListBox.SelectedItem is ListBoxItem item)
+        {
+            var action = item.Tag as string;
+            if (string.IsNullOrEmpty(action))
+                return;
+
+            if (_isDInputCapturingButton)
+            {
+                StopDInputRemapAnimation();
+                _isDInputRemapping = false;
+                _isDInputCapturingButton = false;
+                _dinputRemapAction = "";
+                _poller.IsRemapping = false;
+                DInputRemapButton.Content = "Remap button";
+                DInputRemapButton.Background = s_defaultButtonBrush;
+                return;
+            }
+
+            _dinputRemapAction = action;
+            _isDInputRemapping = true;
+            _isDInputCapturingButton = true;
+            _poller.IsRemapping = true;
+
+            StartDInputRemapAnimation();
+            DInputRemapButton.Content = $"Remapping: \"{action}\"...";
+        }
+    }
+
+    private void StartDInputRemapAnimation()
+    {
+        StopDInputRemapAnimation();
+        _remapFadeAnimation = new Storyboard();
+
+        var fadeIn = new ColorAnimation
+        {
+            From = Color.FromRgb(0xEE, 0xEE, 0xEE),
+            To = Color.FromRgb(0xFF, 0xCC, 0x66),
+            Duration = TimeSpan.FromMilliseconds(600),
+            AutoReverse = true,
+            RepeatBehavior = RepeatBehavior.Forever
+        };
+
+        Storyboard.SetTarget(fadeIn, DInputRemapButton);
+        Storyboard.SetTargetProperty(fadeIn, new PropertyPath("(Button.Background).(SolidColorBrush.Color)"));
+
+        _remapFadeAnimation.Children.Add(fadeIn);
+        _remapFadeAnimation.Begin(this);
+    }
+
+    private void StopDInputRemapAnimation()
+    {
+        if (_remapFadeAnimation != null)
+        {
+            _remapFadeAnimation.Stop();
+            _remapFadeAnimation = null;
+        }
+        DInputRemapButton.Background = s_defaultButtonBrush;
+    }
+
+    private void CalibrateDpadButton_Click(object sender, RoutedEventArgs e)
+    {
+        if (!_isDInputMode) return;
+
+        _poller.Stop();
+        _poller.IsRemapping = true;
+
+        var dialog = new Window
+        {
+            Title = "D-Pad Calibration Wizard",
+            Width = 350,
+            Height = 317,
+            WindowStartupLocation = WindowStartupLocation.CenterOwner,
+            Owner = this,
+            WindowStyle = WindowStyle.ToolWindow,
+            ResizeMode = ResizeMode.NoResize,
+            Background = Brushes.White,
+            Topmost = true
+        };
+
+        var stack = new StackPanel { Margin = new Thickness(16) };
+
+        stack.Children.Add(new TextBlock
+        {
+            Text = "D-Pad Calibration Wizard",
+            FontWeight = FontWeights.Bold,
+            FontSize = 18,
+            Margin = new Thickness(0, 0, 0, 4),
+            HorizontalAlignment = HorizontalAlignment.Center
+        });
+
+        var stepText = new TextBlock
+        {
+            Text = "Step 1/9: Up",
+            FontWeight = FontWeights.Bold,
+            FontSize = 14,
+            Foreground = Brushes.DodgerBlue,
+            HorizontalAlignment = HorizontalAlignment.Center,
+            Margin = new Thickness(0, 0, 0, 2)
+        };
+        stack.Children.Add(stepText);
+
+        var instructionText = new TextBlock
+        {
+            Text = "Press and hold Up for 2 seconds...",
+            TextWrapping = TextWrapping.Wrap,
+            FontSize = 12,
+            HorizontalAlignment = HorizontalAlignment.Center,
+            Margin = new Thickness(0, 0, 0, 6)
+        };
+        stack.Children.Add(instructionText);
+
+        // 3x3 D-Pad grid
+        var dirNames = new[] { "UpLeft", "Up", "UpRight", "Left", "Center", "Right", "DownLeft", "Down", "DownRight" };
+        var dirAbbrev = new Dictionary<string, string>
+        {
+            ["UpLeft"] = "UL", ["Up"] = "Up", ["UpRight"] = "UR",
+            ["Left"] = "L", ["Center"] = "C", ["Right"] = "R",
+            ["DownLeft"] = "DL", ["Down"] = "Dn", ["DownRight"] = "DR"
+        };
+
+        var dirGrid = new (string name, int row, int col)[]
+        {
+            ("UpLeft", 0, 0), ("Up", 0, 1), ("UpRight", 0, 2),
+            ("Left", 1, 0), ("Center", 1, 1), ("Right", 1, 2),
+            ("DownLeft", 2, 0), ("Down", 2, 1), ("DownRight", 2, 2),
+        };
+
+        var dpadGrid = new Grid
+        {
+            HorizontalAlignment = HorizontalAlignment.Center,
+            Margin = new Thickness(0, 0, 0, 6)
+        };
+        for (int i = 0; i < 3; i++)
+        {
+            dpadGrid.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+            dpadGrid.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
+        }
+
+        var dirBoxes = new List<Border>();
+        foreach (var (name, row, col) in dirGrid)
+        {
+            var box = new Border
+            {
+                BorderBrush = Brushes.Gray,
+                BorderThickness = new Thickness(1),
+                CornerRadius = new CornerRadius(3),
+                Padding = new Thickness(6, 2, 6, 2),
+                Margin = new Thickness(2),
+                Background = Brushes.LightGray,
+                Tag = name,
+                Child = new TextBlock
+                {
+                    Text = dirAbbrev[name],
+                    FontWeight = FontWeights.Bold,
+                    FontSize = 11,
+                    HorizontalAlignment = HorizontalAlignment.Center,
+                    MinWidth = 24
+                }
+            };
+            Grid.SetRow(box, row);
+            Grid.SetColumn(box, col);
+            dirBoxes.Add(box);
+            dpadGrid.Children.Add(box);
+        }
+        stack.Children.Add(dpadGrid);
+
+        var progressBar = new System.Windows.Controls.ProgressBar
+        {
+            Minimum = 0,
+            Maximum = 100,
+            Value = 0,
+            Height = 14,
+            Margin = new Thickness(0, 0, 0, 3)
+        };
+        stack.Children.Add(progressBar);
+
+        var countdownText = new TextBlock
+        {
+            Text = "---",
+            FontSize = 20,
+            FontWeight = FontWeights.Bold,
+            Foreground = Brushes.DodgerBlue,
+            HorizontalAlignment = HorizontalAlignment.Center,
+            Margin = new Thickness(0, 0, 0, 3)
+        };
+        stack.Children.Add(countdownText);
+
+        var statusText = new TextBlock
+        {
+            Text = "Press Up on the D-Pad...",
+            FontSize = 12,
+            Foreground = Brushes.DodgerBlue,
+            HorizontalAlignment = HorizontalAlignment.Center,
+            Margin = new Thickness(0, 0, 0, 4)
+        };
+        stack.Children.Add(statusText);
+
+        var closeButton = new Button
+        {
+            Content = "Finish",
+            Width = 80,
+            Height = 26,
+            HorizontalAlignment = HorizontalAlignment.Center,
+            IsEnabled = false
+        };
+        closeButton.Click += (_, _) => dialog.Close();
+        stack.Children.Add(closeButton);
+
+        dialog.Content = stack;
+
+        var cal = DInputCalibration.Load();
+
+        // Auto-record center from current rest position
+        var calDiReader = _poller.DirectInputReader;
+        {
+            int cx = 32767, cy = 32767;
+            if (calDiReader.Available && calDiReader.Poll())
+            {
+                cx = calDiReader.X;
+                cy = calDiReader.Y;
+            }
+            else
+            {
+                var ji = new JOYINFOEX();
+                ji.dwSize = Marshal.SizeOf<JOYINFOEX>();
+                ji.dwFlags = JoyInput.JOY_RETURNALL;
+                if (JoyInput.GetPosEx(0, ref ji) == JoyInput.JOYERR_NOERROR)
+                {
+                    cx = ji.dwXpos;
+                    cy = ji.dwYpos;
+                }
+            }
+            cal.CenterX = cx;
+            cal.CenterY = cy;
+        }
+
+        // Clockwise order (center auto-recorded above)
+        var steps = new[] { "Up", "UpRight", "Right", "DownRight", "Down", "DownLeft", "Left", "UpLeft" };
+        // Map step names to their index in dirBoxes for highlighting
+        var stepToBoxIndex = new Dictionary<string, int>();
+        for (int i = 0; i < dirGrid.Length; i++)
+            stepToBoxIndex[dirGrid[i].name] = i;
+
+        int currentStep = 0;
+        const double stepDuration = 1.0;
+        double elapsed = 0;
+        long sampleSumX = 0, sampleSumY = 0;
+        int sampleCount = 0;
+        bool complete = false;
+        bool recording = false;
+        DateTime stepStartTime = DateTime.UtcNow;
+        bool failed = false;
+
+        var calTimer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(50) };
+
+        calTimer.Tick += (_, _) =>
+        {
+            if (complete) return;
+
+            int xPos = 32767, yPos = 32767;
+            if (calDiReader.Available && calDiReader.Poll())
+            {
+                xPos = calDiReader.X;
+                yPos = calDiReader.Y;
+            }
+            else
+            {
+                var ji = new JOYINFOEX();
+                ji.dwSize = Marshal.SizeOf<JOYINFOEX>();
+                ji.dwFlags = JoyInput.JOY_RETURNALL;
+                if (JoyInput.GetPosEx(0, ref ji) == JoyInput.JOYERR_NOERROR)
+                {
+                    xPos = ji.dwXpos;
+                    yPos = ji.dwYpos;
+                }
+            }
+
+            int cx = cal.CenterX;
+            int cy = cal.CenterY;
+            int dx = xPos - cx;
+            int dy = yPos - cy;
+            int threshold = 13000;
+
+            string dirName = steps[currentStep];
+            stepText.Text = $"Step {currentStep + 1}/{steps.Length}";
+            instructionText.Text = $"Press and hold {dirName} for 1 second...";
+
+            if (stepToBoxIndex.TryGetValue(dirName, out int boxIdx))
+            {
+                for (int i = 0; i < dirBoxes.Count; i++)
+                    dirBoxes[i].Background = i == boxIdx ? Brushes.LightSkyBlue : Brushes.LightGray;
+            }
+
+            bool detected = dirName switch
+            {
+                "Up" => dy < -threshold,
+                "Down" => dy > threshold,
+                "Left" => dx < -threshold,
+                "Right" => dx > threshold,
+                "UpLeft" => dx < -threshold && dy < -threshold,
+                "UpRight" => dx > threshold && dy < -threshold,
+                "DownLeft" => dx < -threshold && dy > threshold,
+                "DownRight" => dx > threshold && dy > threshold,
+                _ => false
+            };
+
+            // Failure state — shown until user re-presses the correct direction
+            if (failed)
+            {
+                countdownText.Text = "FAIL";
+                countdownText.Foreground = Brushes.Red;
+                statusText.Text = "D-Pad released. Press the direction again to retry.";
+                statusText.Foreground = Brushes.Red;
+                if (detected)
+                {
+                    failed = false;
+                    recording = true;
+                    stepStartTime = DateTime.UtcNow;
+                    sampleSumX = 0;
+                    sampleSumY = 0;
+                    sampleCount = 0;
+                    elapsed = 0;
+                    progressBar.Value = 0;
+                    countdownText.Foreground = Brushes.DodgerBlue;
+                    statusText.Text = $"Recording {dirName}...";
+                    statusText.Foreground = Brushes.Green;
+                }
+                return;
+            }
+
+            if (recording)
+            {
+                if (!detected)
+                {
+                    failed = true;
+                    recording = false;
+                    elapsed = 0;
+                    return;
+                }
+
+                sampleSumX += xPos;
+                sampleSumY += yPos;
+                sampleCount++;
+
+                elapsed = (DateTime.UtcNow - stepStartTime).TotalSeconds;
+                double pct = Math.Min(elapsed / stepDuration * 100.0, 100.0);
+                progressBar.Value = pct;
+                countdownText.Text = Math.Max(0, stepDuration - elapsed).ToString("F1");
+
+                if (elapsed < stepDuration)
+                    return;
+
+                progressBar.Foreground = SystemColors.HighlightBrush;
+                int avgX = (int)(sampleSumX / sampleCount);
+                int avgY = (int)(sampleSumY / sampleCount);
+
+                switch (dirName)
+                {
+                    case "Up": cal.UpX = avgX; cal.UpY = avgY; break;
+                    case "Down": cal.DownX = avgX; cal.DownY = avgY; break;
+                    case "Left": cal.LeftX = avgX; cal.LeftY = avgY; break;
+                    case "Right": cal.RightX = avgX; cal.RightY = avgY; break;
+                    case "UpLeft": cal.UpLeftX = avgX; cal.UpLeftY = avgY; break;
+                    case "UpRight": cal.UpRightX = avgX; cal.UpRightY = avgY; break;
+                    case "DownLeft": cal.DownLeftX = avgX; cal.DownLeftY = avgY; break;
+                    case "DownRight": cal.DownRightX = avgX; cal.DownRightY = avgY; break;
+                }
+
+                statusText.Text = $"{dirName} done";
+                statusText.Foreground = Brushes.Green;
+                progressBar.Value = 100;
+                recording = false;
+                currentStep++;
+                elapsed = 0;
+
+                if (currentStep >= steps.Length)
+                {
+                    complete = true;
+                    calTimer.Stop();
+                    cal.Save();
+                    _poller.ReloadCalibration();
+
+                    stepText.Text = "Calibration Complete!";
+                    instructionText.Text = "D-Pad calibration saved and applied.";
+                    countdownText.Text = "Done";
+                    statusText.Text = "All 8 directions + center calibrated.";
+                    statusText.Foreground = Brushes.Green;
+                    closeButton.IsEnabled = true;
+                    closeButton.Content = "Close";
+
+                    for (int i = 0; i < dirBoxes.Count; i++)
+                        dirBoxes[i].Background = Brushes.LightGreen;
+                }
+                else
+                {
+                    statusText.Text = $"Press {steps[currentStep]}...";
+                    statusText.Foreground = Brushes.DodgerBlue;
+                    progressBar.Foreground = SystemColors.HighlightBrush;
+                    progressBar.Value = 0;
+                    countdownText.Text = "---";
+                }
+                return;
+            }
+
+            // Wait for D-Pad input — immediate start (no debounce)
+            if (detected)
+            {
+                recording = true;
+                stepStartTime = DateTime.UtcNow;
+                sampleSumX = 0;
+                sampleSumY = 0;
+                sampleCount = 0;
+                elapsed = 0;
+                progressBar.Foreground = SystemColors.HighlightBrush;
+                statusText.Text = $"Recording {dirName}...";
+                statusText.Foreground = Brushes.Green;
+            }
+            else
+            {
+                statusText.Text = $"Press {dirName}...";
+                statusText.Foreground = Brushes.DodgerBlue;
+                progressBar.Foreground = SystemColors.HighlightBrush;
+                progressBar.Value = 0;
+                countdownText.Text = "---";
+            }
+        };
+
+        dialog.Closed += (_, _) => { calTimer.Stop(); };
+        calTimer.Start();
+        dialog.ShowDialog();
+        calTimer.Stop();
+        _poller.IsRemapping = false;
+        _poller.Start();
+    }
+
     private void KeysHintButton_Click(object sender, RoutedEventArgs e)
     {
-        using var stream = Assembly.GetExecutingAssembly().GetManifestResourceStream("J2MEGamepad.KEys.txt");
+        using var stream = Assembly.GetExecutingAssembly().GetManifestResourceStream("J2MEGamepad.Keys.txt");
         if (stream == null)
         {
-            MessageBox.Show("KEys.txt not found.", "Keys Reference",
+            MessageBox.Show("Keys.txt not found.", "Keys Reference",
                 MessageBoxButton.OK, MessageBoxImage.Information);
             return;
         }
@@ -520,7 +1383,11 @@ public partial class MainWindow : Window
                 Mappings = new System.Collections.Generic.Dictionary<string, ushort>(_profiles.CurrentProfile.Mappings)
             };
             if (DiagDelayPerProfileCheckbox.IsChecked == true)
+            {
                 profile.DiagonalDelayMs = _profiles.CurrentProfile.DiagonalDelayMs;
+                profile.DirectionalDelayMs = _profiles.CurrentProfile.DirectionalDelayMs;
+                profile.DiagonalDelayHoldCardinals = _profiles.CurrentProfile.DiagonalDelayHoldCardinals;
+            }
             _profiles.SaveProfile(profile);
             _profiles.CurrentProfileIndex = _profiles.Profiles.IndexOf(profile);
             _lastProfileName = profile.Name;
@@ -544,17 +1411,7 @@ public partial class MainWindow : Window
         try { action(); }
         catch (Exception ex)
         {
-            try
-            {
-                var logDir = Path.Combine(
-                    Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData),
-                    "J2MEGamepad");
-                Directory.CreateDirectory(logDir);
-                var logPath = Path.Combine(logDir, "error.log");
-                File.AppendAllText(logPath,
-                    $"[{DateTime.Now:yyyy-MM-dd HH:mm:ss}] {ex.Message}\n{ex.StackTrace}\n\n");
-            }
-            catch { }
+            LogHelper.Error("MainWindow", "SafeInvoke", ex);
             MessageBox.Show($"An error occurred. Details saved to error.log.\n\n{ex.Message}",
                 "Error", MessageBoxButton.OK, MessageBoxImage.Error);
         }
@@ -604,7 +1461,11 @@ public partial class MainWindow : Window
                 profile = new KeyMapProfile { Name = name };
             }
             if (DiagDelayPerProfileCheckbox.IsChecked == true)
+            {
                 profile.DiagonalDelayMs = (int)DiagDelaySlider.Value;
+                profile.DirectionalDelayMs = (int)DirDelaySlider.Value;
+                profile.DiagonalDelayHoldCardinals = DiagDelayHoldCheckbox.IsChecked == true;
+            }
             _profiles.SaveProfile(profile);
             _profiles.CurrentProfileIndex = _profiles.Profiles.IndexOf(profile);
             _lastProfileName = profile.Name;
@@ -722,14 +1583,41 @@ public partial class MainWindow : Window
             return;
         }
         KeyCaptureBox.IsEnabled = _profiles.CurrentProfile.Name != "Default";
+
+        if (_isDInputMode)
+        {
+            ReloadDInputMapping();
+            var mapping = _dinputMapping;
+
+            if (mapping.ActionToButton.TryGetValue(_selectedKeyName, out int btnIdx))
+                CurrentMappingText.Text = $"Button {btnIdx + 1}";
+            else
+                CurrentMappingText.Text = "(not mapped)";
+
+            // Show keyboard key in the capture box (same as XInput mode)
+            if (IsDefaultCheckbox.IsChecked == true)
+            {
+                KeyCaptureText.Text = GetDefaultKeyName(_selectedKeyName);
+            }
+            else if (_profiles.CurrentProfile.Mappings.TryGetValue(_selectedKeyName, out var vk))
+            {
+                KeyCaptureText.Text = GetKeyNameFromVK(vk);
+            }
+            else
+            {
+                KeyCaptureText.Text = "Default";
+            }
+            return;
+        }
+
         if (IsDefaultCheckbox.IsChecked == true)
         {
             CurrentMappingText.Text = GetDefaultKeyName(_selectedKeyName);
             KeyCaptureText.Text = "Default";
             return;
         }
-        if (_profiles.CurrentProfile.Mappings.TryGetValue(_selectedKeyName, out var vk))
-            CurrentMappingText.Text = GetKeyNameFromVK(vk);
+        if (_profiles.CurrentProfile.Mappings.TryGetValue(_selectedKeyName, out var vk2))
+            CurrentMappingText.Text = GetKeyNameFromVK(vk2);
         else
             CurrentMappingText.Text = "(not set)";
     }
@@ -789,6 +1677,30 @@ public partial class MainWindow : Window
         KeyCaptureBox.Background = System.Windows.Media.Brushes.LightGreen;
         _isCapturingKey = false;
         this.PreviewKeyDown -= OnCaptureKeyDown;
+    }
+
+    private string GetDInputDeviceName()
+    {
+        var di = _poller.DirectInputReader;
+        if (di?.DebugInfo?.StartsWith("OK: ") == true)
+            return di.DebugInfo[4..];
+        return "DInput controller";
+    }
+
+    private void ReloadDInputMapping()
+    {
+        try
+        {
+            var path = DInputMapping.GetFilePath();
+            if (File.Exists(path))
+                _dinputMapping = DInputMapping.FromJson(File.ReadAllText(path)) ?? new DInputMapping();
+            else
+                _dinputMapping = new DInputMapping();
+        }
+        catch
+        {
+            _dinputMapping = new DInputMapping();
+        }
     }
 
     private static string GetKeyNameFromVK(ushort vk)

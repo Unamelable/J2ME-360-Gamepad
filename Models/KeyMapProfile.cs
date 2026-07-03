@@ -23,6 +23,10 @@ public class KeyMapProfile
 
     public int DiagonalDelayMs { get; set; } = 0;
 
+    public int DirectionalDelayMs { get; set; } = 0;
+
+    public bool DiagonalDelayHoldCardinals { get; set; } = false;
+
     [JsonIgnore]
     public static ushort KeyEnter { get; } = 0x0D;
     [JsonIgnore]
@@ -60,9 +64,11 @@ public class KeyMapProfile
     [JsonIgnore]
     public static ushort KeyRight { get; } = 0x27;
 
+    private static readonly JsonSerializerOptions s_jsonOptions = new() { WriteIndented = true };
+
     public string ToJson()
     {
-        return JsonSerializer.Serialize(this, new JsonSerializerOptions { WriteIndented = true });
+        return JsonSerializer.Serialize(this, s_jsonOptions);
     }
 
     public static KeyMapProfile? FromJson(string json)

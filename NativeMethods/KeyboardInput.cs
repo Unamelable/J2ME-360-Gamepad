@@ -53,6 +53,11 @@ public static class KeyboardInput
     private const uint KEYEVENTF_KEYDOWN = 0x0000;
     private const uint KEYEVENTF_KEYUP = 0x0002;
 
+    private static readonly int InputSize = Marshal.SizeOf<INPUT>();
+
+    [ThreadStatic]
+    private static INPUT[]? _inputBuffer;
+
     [DllImport("user32.dll", SetLastError = true)]
     private static extern uint SendInput(uint nInputs, INPUT[] pInputs, int cbSize);
 
@@ -68,7 +73,8 @@ public static class KeyboardInput
 
     private static void SendKey(ushort virtualKeyCode, uint flags)
     {
-        var input = new INPUT
+        _inputBuffer ??= new INPUT[1];
+        _inputBuffer[0] = new INPUT
         {
             type = INPUT_KEYBOARD,
             u = new InputUnion
@@ -84,6 +90,6 @@ public static class KeyboardInput
             }
         };
 
-        SendInput(1, new[] { input }, Marshal.SizeOf<INPUT>());
+        SendInput(1, _inputBuffer, InputSize);
     }
 }

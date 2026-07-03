@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
+using System.Threading;
 using J2MEGamepad.Models;
 
 namespace J2MEGamepad.Services;
@@ -11,7 +12,7 @@ public class ProfileManager : IDisposable
     private readonly string _profilesDir;
     private FileSystemWatcher? _watcher;
     private readonly object _lock = new();
-    private bool _isReloading;
+    private int _isReloading;
     private List<KeyMapProfile> _profiles = new();
 
     public List<KeyMapProfile> Profiles
@@ -78,8 +79,7 @@ public class ProfileManager : IDisposable
 
     private void ReloadAndNotify()
     {
-        if (_isReloading) return;
-        _isReloading = true;
+        if (Interlocked.CompareExchange(ref _isReloading, 1, 0) != 0) return;
         try
         {
             LoadProfiles();
@@ -87,7 +87,7 @@ public class ProfileManager : IDisposable
         }
         finally
         {
-            _isReloading = false;
+            Interlocked.Exchange(ref _isReloading, 0);
         }
     }
 

@@ -18,10 +18,10 @@ public partial class OverlayWindow : Window
     private const int GWL_EXSTYLE = -20;
 
     [DllImport("user32.dll")]
-    private static extern int GetWindowLong(IntPtr hWnd, int nIndex);
+    private static extern nint GetWindowLong(IntPtr hWnd, int nIndex);
 
     [DllImport("user32.dll")]
-    private static extern int SetWindowLong(IntPtr hWnd, int nIndex, int dwNewLong);
+    private static extern nint SetWindowLong(IntPtr hWnd, int nIndex, nint dwNewLong);
 
     public OverlayWindow()
     {
@@ -40,12 +40,21 @@ public partial class OverlayWindow : Window
     {
         _currentAnimation?.Stop();
         _currentAnimation = null;
-        _swapTimer?.Stop();
+        if (_swapTimer != null)
+        {
+            _swapTimer.Stop();
+            _swapTimer = null;
+        }
         _disconnectedAnimation?.Stop();
         _disconnectedAnimation = null;
         DisconnectedBorder.BeginAnimation(OpacityProperty, null);
         OsdBorder.BeginAnimation(OpacityProperty, null);
         OsdText.BeginAnimation(OpacityProperty, null);
+    }
+
+    public void SetDisconnectedText(string text)
+    {
+        DisconnectedText.Text = text;
     }
 
     public void ShowDisconnected()

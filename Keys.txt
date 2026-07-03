@@ -1,0 +1,78 @@
+ ╔═════════════════════════════════════════════════╗
+ ║      J2ME 360 Gamepad - Default Key Map         ║
+ ║            Reference for KEmulator              ║
+ ╚═════════════════════════════════════════════════╝
+
+ ┌─────────────────────────────────────────────────┐
+ │ DPAD / MOVEMENT CONTROLS                        │
+ ├─────────────────────────────────────────────────┤
+ │                                                 │
+ │  PAD Mode:                                      │
+ │    UP    = Arrow Up          (VK_UP)            │
+ │    DOWN  = Arrow Down      (VK_DOWN)            │
+ │    LEFT  = Arrow Left      (VK_LEFT)            │
+ │    RIGHT = Arrow Right    (VK_RIGHT)            │
+ │                                                 │
+ │  KEYPAD Mode:                                   │
+ │    UP    = Numpad 8                             │
+ │    DOWN  = Numpad 2                             │
+ │    LEFT  = Numpad 4                             │
+ │    RIGHT = Numpad 6                             │
+ │                                                 │
+ │  PAD+DIAGONAL Mode:                             │
+ │    UP/DOWN/LEFT/RIGHT = Arrow Keys              │
+ │    UP+LEFT   = Arrow Up+Left + Numpad 7         │
+ │    UP+RIGHT  = Arrow Up+Right + Numpad 9        │
+ │    DOWN+LEFT = Arrow Down+Left + Numpad 1       │
+ │    DOWN+RIGHT= Arrow Down+Right + Numpad 3      │
+ │                                                 │
+ └─────────────────────────────────────────────────┘
+
+ ┌─────────────────────────────────────────────────┐
+ │ SHOULDER BUTTONS (LB/RB/LT/RT)                  │
+ ├─────────────────────────────────────────────────┤
+ │                                                 │
+ │    LB  =  Numpad *   (asterisk / multiply)      │
+ │    RB  =  Numpad /        (slash / divide)      │
+ │    LT  =  F1                                    │
+ │    RT  =  F2                                    │
+ │    Right Stick = Enter                          │
+ │                                                 │
+ └─────────────────────────────────────────────────┘
+
+ ┌─────────────────────────────────────────────────┐
+ │ FACE BUTTONS (Y / X / A / B)                    │
+ ├─────────────────────────────────────────────────┤
+ │                                                 │
+ │    Y  =  Numpad *       (asterisk / multiply)   │
+ │    X  =  F1                                     │
+ │    A  =  Enter (PAD mode) / Numpad 5 (KEYPAD)   │
+ │    B  =  F2                                     │
+ │                                                 │
+ └─────────────────────────────────────────────────┘
+
+ ┌─────────────────────────────────────────────────┐
+ │ MODE SWITCHING                                  │
+ ├─────────────────────────────────────────────────┤
+ │                                                 │
+ │    View/Back  =  Cycle PAD -> KEYPAD ->         │
+ │                  PAD+DIAGONAL (and back)        │
+ │    Start      =  Cycle YXAB profiles forward    │
+ │    Left Stick =  Toggle "Back cycles YXAB"      │
+ │    (when BackCycles checked:                    │
+ │    View/Back =  Cycle YXAB profiles backward)   │
+ │                                                 │
+ └─────────────────────────────────────────────────┘
+
+ ┌─────────────────────────────────────────────────┐
+ │ QUICK REFERENCE                                 │
+ ├─────────────────────────────────────────────────┤
+ │                                                 │
+ │    PAD Mode:      Arrow keys                    │
+ │    KEYPAD Mode:   Numpad 2/4/6/8                │
+ │    PAD+DIAGONAL:  Arrow keys + Numpad 1/3/7/9   │
+ │                                                 │
+ │    Profile switching: Start = forward           │
+ │                       Back = backward (if set)  │
+ │                                                 │
+ └─────────────────────────────────────────────────┘

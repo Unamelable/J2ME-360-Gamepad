@@ -13,7 +13,11 @@
   </PropertyGroup>
 
   <ItemGroup>
-    <EmbeddedResource Include="KEys.txt" />
+    <EmbeddedResource Include="Keys.txt" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Include="SharpDX.DirectInput" Version="4.2.0" />
   </ItemGroup>
 
 </Project>

@@ -29,7 +29,7 @@
                            FontWeight="Bold"
                            HorizontalAlignment="Center"
                            VerticalAlignment="Center"
-                           Text="XBOX 360 CONTROLLER NOT DETECTED"
+                           Text=""
                            TextAlignment="Center"
                            TextWrapping="Wrap" />
             </Border>
