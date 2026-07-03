@@ -621,6 +621,14 @@ Three modes cycled via View/Back (or gamepad start for profiles):
 
 **Directional Delay** (0-300ms): suppresses D-Pad crosstalk by requiring a hold duration before registering cardinal or diagonal transitions. When active, forces hold-cardinal to OFF.
 
+**WITHOUT DELAY**
+
+<img width="125" height="137" alt="firefox_JOcIZSgGyH" src="https://github.com/user-attachments/assets/54e06970-28d3-4d87-a241-99c18493ec40" />
+
+**WITH MAX DELAY**
+
+<img width="125" height="137" alt="342342432423342234324234" src="https://github.com/user-attachments/assets/95cead29-5f6b-41ab-98df-5538f3a2c227" />
+
 ---
 
 ## Button Mappings
