@@ -656,10 +656,10 @@ All action buttons use **hold behavior** (press on down, release on up), not tap
 
 | Trigger | Animation | Duration |
 | --- | --- | --- |
-| DPAD mode change<br/>![J2ME360GamepadP91RvCiao7](https://github.com/user-attachments/assets/8896287d-f4a3-4f9e-b103-626269931692) | Fade in → hold → fade out | ~1.5s |
-| Profile swap (via gamepad)<br/>![J2ME360Gamepad63MoLAmaGv](https://github.com/user-attachments/assets/0598ee6f-2113-48af-a84c-94a5458af455) | Crossfade old name → new name | ~1.5s |
-| Controller disconnected<br/>![J2ME360GamepadK5cyqFXAcK](https://github.com/user-attachments/assets/90300b3c-b334-4f15-bcfd-f27c90b3ab21) | Infinite yellow pulse (0→0.8→0) | 2.5s per cycle |
-| Controller reconnected | Immediate hide | Instant |
+| **DPAD mode change**<br/><br/><img width="550" alt="DPAD mode change animation" src="https://github.com/user-attachments/assets/8896287d-f4a3-4f9e-b103-626269931692" /> | Fade in → hold → fade out | ~1.5s |
+| **Profile swap (via gamepad)**<br/><br/><img width="550" alt="Profile swap animation" src="https://github.com/user-attachments/assets/0598ee6f-2113-48af-a84c-94a5458af455" /> | Crossfade old name → new name | ~1.5s |
+| **Controller disconnected**<br/><br/><img width="550" alt="Controller disconnected animation" src="https://github.com/user-attachments/assets/90300b3c-b334-4f15-bcfd-f27c90b3ab21" /> | Infinite yellow pulse (0→0.8→0) | 2.5s per cycle |
+| **Controller reconnected** | Immediate hide | Instant |
 
 `ClearAnimations()` is called before every OSD operation. It uses `BeginAnimation(OpacityProperty, null)` on all three animated elements (`DisconnectedBorder`, `OsdBorder`, `OsdText`) to unconditionally clear any animated property values left by previous storyboards.
 
