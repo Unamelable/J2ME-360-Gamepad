@@ -751,8 +751,8 @@ All action buttons use **hold behavior** (press on down, release on up), not tap
 | --- | --- | --- |
 | **DPAD mode change**<br/><br/><img width="550" alt="DPAD mode change animation" src="https://github.com/user-attachments/assets/8896287d-f4a3-4f9e-b103-626269931692" /> | Fade in → hold → fade out | ~1.5s |
 | **Profile swap (via gamepad)**<br/><br/><img width="550" alt="Profile swap animation" src="https://github.com/user-attachments/assets/0598ee6f-2113-48af-a84c-94a5458af455" /> | Crossfade old name → new name | ~1.5s |
-| Combo triggered (key sequence / exec launch) | Fade in → hold → fade out | ~1.5s |
-| Combo modifier active (RB+LB / RT+LT) | Semi-transparent overlay box | While held |
+| **Combo triggered (key sequence / exec launch)**<br/><br/><img width="550" alt="J2MEGamepad_gSxtZ7kQUW" src="https://github.com/user-attachments/assets/154254e2-872e-4eff-8cee-88be87558251" /> | Fade in → hold → fade out | ~1.5s |
+| **Combo modifier active (RB+LB / RT+LT)**<br/><br/><img width="550" alt="J2MEGamepad_MBweB5tliq" src="https://github.com/user-attachments/assets/1fb8e81e-9d3d-41d5-8025-98a9f86dce1e" /> | Semi-transparent overlay box | While held |
 | **Controller disconnected**<br/><br/><img width="550" alt="Controller disconnected animation" src="https://github.com/user-attachments/assets/90300b3c-b334-4f15-bcfd-f27c90b3ab21" /> | Infinite yellow pulse (0→0.8→0) | 2.5s per cycle |
 | Controller reconnected | Immediate hide | Instant |
 
