@@ -87,64 +87,135 @@ public struct GamepadState
         DPadLeft = false;
         DPadRight = false;
 
-        float cx = cal?.CenterX ?? 32767;
-        float cy = cal?.CenterY ?? 32767;
-        float deadzone = (cal?.DeadzonePercent ?? 40) / 100.0f;
+        double cx = cal?.CenterX ?? 32767;
+        double cy = cal?.CenterY ?? 32767;
+        double deadzone = (cal?.DeadzonePercent ?? 40) / 100.0;
 
-        // Normalize axes to -1..1 float and get angle + magnitude
-        if (ReadAxisDirection(xPos, yPos, cx, cy, deadzone)) return;
+        // ── Priority 1: POV hat ──────────────────────────────────────────
+        // Centered when low word is 0xFFFF (handles both -1 and 65535)
+        if ((pov & 0xFFFF) != 0xFFFF)
+        {
+            // POV=0 is ambiguous: could be "No POV hat" (struct stays 0) or "North".
+            // WinMM often returns 0 even without a POV hat. Always fall through to analog axes.
+            if (pov == 0)
+                goto fallthrough;
 
-        // ── Z/R axis guard ──────────────────────────────────────────────
+            // 8-direction sector detection (±2250° tolerance per 45° sector)
+            if (pov < 2250 || pov >= 33750)                DPadUp = true;
+            else if (pov < 6750)  { DPadUp = true; DPadRight = true; }
+            else if (pov < 11250)                          DPadRight = true;
+            else if (pov < 15750) { DPadDown = true; DPadRight = true; }
+            else if (pov < 20250)                          DPadDown = true;
+            else if (pov < 24750) { DPadDown = true; DPadLeft = true; }
+            else if (pov < 29250)                          DPadLeft = true;
+            else if (pov < 33750) { DPadUp = true; DPadLeft = true; }
+
+            return;
+        }
+    fallthrough:
+
+        // ── Priority 2: X/Y analog stick ─────────────────────────────────
+        // Some cheap gamepads have no POV hat and use the analog stick as
+        // a DPad. Only use this when the stick is actually deflected beyond
+        // the deadzone threshold.
+        if (ReadAxisDirection(xPos, yPos, cx, cy, deadzone, cal))
+            return;
+
+        // ── Priority 3: Z/R axis ─────────────────────────────────────────
         // Skip Z/R when both axes are far from center (>85% of range).
         // On cheap DInput gamepads, Z/R are triggers at rest (0,0) which
         // would produce a persistent false UpLeft reading without this.
-        // ────────────────────────────────────────────────────────────────
-        float zDistNorm = MathF.Abs(zPos - cx) / 32767.0f;
-        float rDistNorm = MathF.Abs(rPos - cy) / 32767.0f;
-        if (zDistNorm <= 0.85f || rDistNorm <= 0.85f)
+        double zDistNorm = Math.Abs(zPos - cx) / 32767.0;
+        double rDistNorm = Math.Abs(rPos - cy) / 32767.0;
+        if (zDistNorm <= 0.85 || rDistNorm <= 0.85)
         {
-            if (ReadAxisDirection(zPos, rPos, cx, cy, deadzone)) return;
-        }
-
-        // Fallback: POV hat
-        if (pov >= 0 && pov != 0xFFFF)
-        {
-            if (pov < 4500 || pov >= 31500) DPadUp = true;
-            if (pov >= 4500 && pov < 13500) DPadRight = true;
-            if (pov >= 13500 && pov < 22500) DPadDown = true;
-            if (pov >= 22500 && pov < 31500) DPadLeft = true;
+            if (ReadAxisDirection(zPos, rPos, cx, cy, deadzone, cal))
+                return;
         }
     }
 
-    private bool ReadAxisDirection(float rawX, float rawY, float cx, float cy, float deadzone)
+    private bool ReadAxisDirection(double rawX, double rawY, double cx, double cy, double deadzone, DInputCalibration? cal = null)
     {
-        float nx = (rawX - cx) / 32767.0f;
-        float ny = (rawY - cy) / 32767.0f;
-        float mag = MathF.Sqrt(nx * nx + ny * ny);
+        double nx = (rawX - cx) / 32767.0;
+        double ny = (rawY - cy) / 32767.0;
+        double mag = Math.Sqrt(nx * nx + ny * ny);
 
         if (mag <= deadzone) return false;
 
-        float angle = MathF.Atan2(-ny, nx) * 180.0f / MathF.PI;
+        if (cal != null && cal.HasUserCalibration)
+            return ReadAxisDirectionCalibrated(rawX, rawY, cx, cy, cal);
+
+        double angle = Math.Atan2(-ny, nx) * 180.0 / Math.PI;
 
         // 8-direction sector mapping
-        if (angle >= -22.5f && angle < 22.5f)
+        if (angle >= -22.5 && angle < 22.5)
             DPadRight = true;
-        else if (angle >= 22.5f && angle < 67.5f)
+        else if (angle >= 22.5 && angle < 67.5)
             { DPadUp = true; DPadRight = true; }
-        else if (angle >= 67.5f && angle < 112.5f)
+        else if (angle >= 67.5 && angle < 112.5)
             DPadUp = true;
-        else if (angle >= 112.5f && angle < 157.5f)
+        else if (angle >= 112.5 && angle < 157.5)
             { DPadUp = true; DPadLeft = true; }
-        else if (angle >= 157.5f || angle < -157.5f)
+        else if (angle >= 157.5 || angle < -157.5)
             DPadLeft = true;
-        else if (angle >= -157.5f && angle < -112.5f)
+        else if (angle >= -157.5 && angle < -112.5)
             { DPadDown = true; DPadLeft = true; }
-        else if (angle >= -112.5f && angle < -67.5f)
+        else if (angle >= -112.5 && angle < -67.5)
             DPadDown = true;
-        else if (angle >= -67.5f && angle < -22.5f)
+        else if (angle >= -67.5 && angle < -22.5)
             { DPadDown = true; DPadRight = true; }
 
         return true;
+    }
+
+    private bool ReadAxisDirectionCalibrated(double rawX, double rawY, double cx, double cy, DInputCalibration cal)
+    {
+        double currentAngle = NormalizedAngle(rawX, rawY, cx, cy);
+
+        var dirNames = new[] { "Right", "UpRight", "Up", "UpLeft", "Left", "DownLeft", "Down", "DownRight" };
+        var dirAngles = new[]
+        {
+            NormalizedAngle(cal.RightX, cal.RightY, cx, cy),
+            NormalizedAngle(cal.UpRightX, cal.UpRightY, cx, cy),
+            NormalizedAngle(cal.UpX, cal.UpY, cx, cy),
+            NormalizedAngle(cal.UpLeftX, cal.UpLeftY, cx, cy),
+            NormalizedAngle(cal.LeftX, cal.LeftY, cx, cy),
+            NormalizedAngle(cal.DownLeftX, cal.DownLeftY, cx, cy),
+            NormalizedAngle(cal.DownX, cal.DownY, cx, cy),
+            NormalizedAngle(cal.DownRightX, cal.DownRightY, cx, cy),
+        };
+
+        double minDiff = double.MaxValue;
+        int bestIdx = 0;
+        for (int i = 0; i < dirAngles.Length; i++)
+        {
+            double diff = Math.Abs(currentAngle - dirAngles[i]);
+            if (diff > 180) diff = 360 - diff;
+            if (diff < minDiff) { minDiff = diff; bestIdx = i; }
+        }
+
+        switch (dirNames[bestIdx])
+        {
+            case "Right":     DPadRight = true; break;
+            case "UpRight":   DPadUp = true; DPadRight = true; break;
+            case "Up":        DPadUp = true; break;
+            case "UpLeft":    DPadUp = true; DPadLeft = true; break;
+            case "Left":      DPadLeft = true; break;
+            case "DownLeft":  DPadDown = true; DPadLeft = true; break;
+            case "Down":      DPadDown = true; break;
+            case "DownRight": DPadDown = true; DPadRight = true; break;
+        }
+
+        return true;
+    }
+
+    private static double NormalizedAngle(double rawX, double rawY, double cx, double cy)
+    {
+        double nx = (rawX - cx) / 32767.0;
+        double ny = (rawY - cy) / 32767.0;
+        double angle = Math.Atan2(-ny, nx) * 180.0 / Math.PI;
+        if (angle < 0) angle += 360;
+        return angle;
     }
 
     public void UpdateTriggers(byte leftTrigger, byte rightTrigger, byte threshold = 50)

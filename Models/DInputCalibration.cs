@@ -1,11 +1,17 @@
 using System;
 using System.IO;
-using System.Text.Json;
+using J2MEGamepad.Services;
+using Newtonsoft.Json;
 
 namespace J2MEGamepad.Models;
 
 public class DInputCalibration
 {
+    private static readonly JsonSerializerSettings JsonSettings = new()
+    {
+        MaxDepth = 32
+    };
+
     public int DeadzonePercent { get; set; } = 40;
     public int CenterX { get; set; } = 32767;
     public int CenterY { get; set; } = 32767;
@@ -26,16 +32,24 @@ public class DInputCalibration
     public int DownRightX { get; set; } = 65535;
     public int DownRightY { get; set; } = 65535;
 
-    private static readonly JsonSerializerOptions s_jsonOptions = new() { WriteIndented = true };
+    public bool HasUserCalibration =>
+        UpX != 32767 || UpY != 0 ||
+        DownX != 32767 || DownY != 65535 ||
+        LeftX != 0 || LeftY != 32767 ||
+        RightX != 65535 || RightY != 32767 ||
+        UpLeftX != 0 || UpLeftY != 0 ||
+        UpRightX != 65535 || UpRightY != 0 ||
+        DownLeftX != 0 || DownLeftY != 65535 ||
+        DownRightX != 65535 || DownRightY != 65535;
 
     public string ToJson()
     {
-        return JsonSerializer.Serialize(this, s_jsonOptions);
+        return JsonConvert.SerializeObject(this, Formatting.Indented);
     }
 
     public static DInputCalibration? FromJson(string json)
     {
-        return JsonSerializer.Deserialize<DInputCalibration>(json);
+        return JsonConvert.DeserializeObject<DInputCalibration>(json, JsonSettings);
     }
 
     public static string GetFilePath()
@@ -63,7 +77,7 @@ public class DInputCalibration
             {
                 return FromJson(File.ReadAllText(path)) ?? new DInputCalibration();
             }
-            catch { }
+            catch (Exception ex) { LogHelper.Error("DInputCalibration", "Load", ex); }
         }
         return new DInputCalibration();
     }

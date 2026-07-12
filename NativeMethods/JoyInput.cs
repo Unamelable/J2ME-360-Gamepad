@@ -33,7 +33,9 @@ public static class JoyInput
 
     public const int JOYERR_NOERROR = 0;
     public const int JOYERR_UNPLUGGED = 165;
-    public const int JOY_RETURNALL = 0x3FF;
+    // POV flag for proper centered reporting (0xFFFF = centered)
+    public const int JOY_RETURNPOVCTS = 0x200;
+    public const int JOY_RETURNALL = 0xFF;
 
     public const int POV_CENTERED = -1;
     public const int POV_CENTERED_U = 0xFFFF;

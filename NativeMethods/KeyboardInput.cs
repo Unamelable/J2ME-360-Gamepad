@@ -50,10 +50,13 @@ public static class KeyboardInput
     }
 
     private const uint INPUT_KEYBOARD = 1;
+    private const uint INPUT_MOUSE = 0;
     private const uint KEYEVENTF_KEYDOWN = 0x0000;
     private const uint KEYEVENTF_KEYUP = 0x0002;
+    private const uint MOUSEEVENTF_MIDDLEDOWN = 0x0020;
+    private const uint MOUSEEVENTF_MIDDLEUP = 0x0040;
 
-    private static readonly int InputSize = Marshal.SizeOf<INPUT>();
+    private static readonly int InputSize = Marshal.SizeOf(typeof(INPUT));
 
     [ThreadStatic]
     private static INPUT[]? _inputBuffer;
@@ -71,6 +74,16 @@ public static class KeyboardInput
         SendKey(virtualKeyCode, KEYEVENTF_KEYUP);
     }
 
+    public static void SendMouseDown()
+    {
+        SendMouse(MOUSEEVENTF_MIDDLEDOWN);
+    }
+
+    public static void SendMouseUp()
+    {
+        SendMouse(MOUSEEVENTF_MIDDLEUP);
+    }
+
     private static void SendKey(ushort virtualKeyCode, uint flags)
     {
         _inputBuffer ??= new INPUT[1];
@@ -83,6 +96,29 @@ public static class KeyboardInput
                 {
                     wVk = virtualKeyCode,
                     wScan = (ushort)((uint)virtualKeyCode & 0xFF),
+                    dwFlags = flags,
+                    time = 0,
+                    dwExtraInfo = IntPtr.Zero
+                }
+            }
+        };
+
+        SendInput(1, _inputBuffer, InputSize);
+    }
+
+    private static void SendMouse(uint flags)
+    {
+        _inputBuffer ??= new INPUT[1];
+        _inputBuffer[0] = new INPUT
+        {
+            type = INPUT_MOUSE,
+            u = new InputUnion
+            {
+                mi = new MOUSEINPUT
+                {
+                    dx = 0,
+                    dy = 0,
+                    mouseData = 0,
                     dwFlags = flags,
                     time = 0,
                     dwExtraInfo = IntPtr.Zero

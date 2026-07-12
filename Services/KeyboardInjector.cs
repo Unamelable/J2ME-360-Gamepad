@@ -6,6 +6,8 @@ namespace J2MEGamepad.Services;
 
 public class KeyboardInjector : IDisposable
 {
+    private const ushort VK_MBUTTON = 0x04;
+
     private readonly HashSet<ushort> _keysDown = new();
     private readonly object _lock = new();
     private bool _disposed;
@@ -18,7 +20,10 @@ public class KeyboardInjector : IDisposable
             if (_disposed) return;
             if (!_keysDown.Contains(vkCode))
             {
-                KeyboardInput.SendKeyDown(vkCode);
+                if (vkCode == VK_MBUTTON)
+                    KeyboardInput.SendMouseDown();
+                else
+                    KeyboardInput.SendKeyDown(vkCode);
                 _keysDown.Add(vkCode);
             }
         }
@@ -32,7 +37,10 @@ public class KeyboardInjector : IDisposable
             if (_disposed) return;
             if (_keysDown.Contains(vkCode))
             {
-                KeyboardInput.SendKeyUp(vkCode);
+                if (vkCode == VK_MBUTTON)
+                    KeyboardInput.SendMouseUp();
+                else
+                    KeyboardInput.SendKeyUp(vkCode);
                 _keysDown.Remove(vkCode);
             }
         }

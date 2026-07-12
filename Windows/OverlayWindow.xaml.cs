@@ -12,6 +12,7 @@ public partial class OverlayWindow : Window
     private Storyboard? _currentAnimation;
     private Storyboard? _disconnectedAnimation;
     private DispatcherTimer? _swapTimer;
+    private string _lastOsdMessage = "";
 
     private const int WS_EX_NOACTIVATE = 0x08000000;
     private const int WS_EX_TRANSPARENT = 0x00000020;
@@ -48,6 +49,7 @@ public partial class OverlayWindow : Window
         _disconnectedAnimation?.Stop();
         _disconnectedAnimation = null;
         DisconnectedBorder.BeginAnimation(OpacityProperty, null);
+        ComboModifierBorder.BeginAnimation(OpacityProperty, null);
         OsdBorder.BeginAnimation(OpacityProperty, null);
         OsdText.BeginAnimation(OpacityProperty, null);
     }
@@ -87,10 +89,48 @@ public partial class OverlayWindow : Window
         DisconnectedBorder.Opacity = 0;
     }
 
+    public void ShowComboModifier()
+    {
+        ClearAnimations();
+        DisconnectedBorder.Opacity = 0;
+        OsdBorder.Opacity = 0;
+        ComboModifierText.Text = "Press combo key...";
+        ComboModifierBorder.Opacity = 0;
+
+        var fadeIn = new DoubleAnimation(0, 0.85, TimeSpan.FromMilliseconds(750));
+        var fadeOut = new DoubleAnimation(0.85, 0, TimeSpan.FromMilliseconds(750));
+        fadeIn.EasingFunction = new QuadraticEase { EasingMode = EasingMode.EaseInOut };
+        fadeOut.EasingFunction = new QuadraticEase { EasingMode = EasingMode.EaseInOut };
+        fadeOut.BeginTime = TimeSpan.FromMilliseconds(750);
+
+        var storyboard = new Storyboard();
+        storyboard.Children.Add(fadeIn);
+        storyboard.Children.Add(fadeOut);
+
+        Storyboard.SetTarget(fadeIn, ComboModifierBorder);
+        Storyboard.SetTargetProperty(fadeIn, new PropertyPath(OpacityProperty));
+        Storyboard.SetTarget(fadeOut, ComboModifierBorder);
+        Storyboard.SetTargetProperty(fadeOut, new PropertyPath(OpacityProperty));
+
+        storyboard.RepeatBehavior = RepeatBehavior.Forever;
+        _disconnectedAnimation = storyboard;
+        storyboard.Begin(this);
+    }
+
+    public void HideComboModifier()
+    {
+        ClearAnimations();
+        ComboModifierBorder.Opacity = 0;
+        ComboModifierText.Text = "";
+    }
+
     public void ShowOsd(string text)
     {
         ClearAnimations();
         DisconnectedBorder.Opacity = 0;
+        ComboModifierBorder.Opacity = 0;
+        ComboModifierText.Text = "";
+        _lastOsdMessage = text;
         OsdText.Text = text;
         OsdText.Opacity = 1;
         OsdBorder.Opacity = 0;
@@ -155,6 +195,7 @@ public partial class OverlayWindow : Window
         _swapTimer.Tick += (_, _) =>
         {
             _swapTimer.Stop();
+            _lastOsdMessage = newText;
             OsdText.Text = newText;
             OsdText.Opacity = 0;
         };
@@ -162,5 +203,11 @@ public partial class OverlayWindow : Window
 
         _currentAnimation = storyboard;
         storyboard.Begin(this);
+    }
+
+    public void ShowLastOsd()
+    {
+        if (!string.IsNullOrEmpty(_lastOsdMessage))
+            ShowOsd(_lastOsdMessage);
     }
 }

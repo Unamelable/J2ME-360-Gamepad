@@ -1,12 +1,18 @@
 using System;
 using System.Collections.Generic;
 using System.IO;
-using System.Text.Json;
+using J2MEGamepad.Services;
+using Newtonsoft.Json;
 
 namespace J2MEGamepad.Models;
 
 public class DInputMapping
 {
+    private static readonly JsonSerializerSettings JsonSettings = new()
+    {
+        MaxDepth = 32
+    };
+
     public Dictionary<string, int> ActionToButton { get; set; } = new()
     {
         ["X"] = 0,
@@ -37,16 +43,14 @@ public class DInputMapping
         return rev;
     }
 
-    private static readonly JsonSerializerOptions s_jsonOptions = new() { WriteIndented = true };
-
     public string ToJson()
     {
-        return JsonSerializer.Serialize(this, s_jsonOptions);
+        return JsonConvert.SerializeObject(this, Formatting.Indented);
     }
 
     public static DInputMapping? FromJson(string json)
     {
-        return JsonSerializer.Deserialize<DInputMapping>(json);
+        return JsonConvert.DeserializeObject<DInputMapping>(json, JsonSettings);
     }
 
     public static string GetFilePath()
@@ -74,7 +78,7 @@ public class DInputMapping
                 var json = File.ReadAllText(path);
                 return FromJson(json) ?? new DInputMapping();
             }
-            catch { }
+            catch (Exception ex) { LogHelper.Error("DInputMapping", "Load", ex); }
         }
         return new DInputMapping();
     }

@@ -10,7 +10,6 @@ using System.Windows.Controls;
 using System.Windows.Input;
 using System.Windows.Interop;
 using System.Windows.Media;
-using System.Windows.Media.Animation;
 using System.Windows.Threading;
 using J2MEGamepad.Models;
 using J2MEGamepad.NativeMethods;
@@ -43,14 +42,18 @@ public partial class MainWindow : Window
     private string? _selectedKeyName;
     private string _lastProfileName = "Default";
     private bool _customKeyWarningShown;
+    private bool _terminateWarningShown;
+    private bool _javaSeenOnce;
+    private System.Timers.Timer? _terminateTimer;
     private bool _savedDelayHoldState = true;
     private bool _isDInputMode;
     private bool _isDInputRemapping;
+    private bool _initialized;
     private string _dinputRemapAction = "";
-    private Storyboard? _remapFadeAnimation;
     private bool _isDInputCapturingButton;
     private string _lastControllerName = "";
     private DInputMapping _dinputMapping = new();
+    private ComboSettings _comboSettings = new();
     private readonly System.Windows.Threading.DispatcherTimer _disconnectTimer;
 
     public MainWindow()
@@ -58,6 +61,7 @@ public partial class MainWindow : Window
         InitializeComponent();
 
         _keyboard = new KeyboardInjector();
+        App.GlobalKeyboard = _keyboard;
         _profiles = new ProfileManager();
         _poller = new GamepadPoller(_keyboard, _profiles);
         _watchdog = new ControllerWatchdog();
@@ -71,7 +75,7 @@ public partial class MainWindow : Window
 
         _trayIcon = new System.Windows.Forms.NotifyIcon
         {
-            Icon = System.Drawing.SystemIcons.Application,
+            Icon = LoadAppIcon(),
             Text = "J2ME 360 Gamepad",
             Visible = false
         };
@@ -93,12 +97,44 @@ public partial class MainWindow : Window
         _poller.BackCyclesToggled += OnBackCyclesToggled;
         _poller.DInputModeChanged += OnDInputModeChanged;
         _poller.DInputButtonPressed += OnDInputButtonPressed;
+        _poller.ComboTriggered += OnComboTriggered;
+        _poller.ComboModifierActive += OnComboModifierActive;
+        _poller.ComboModifierInactive += OnComboModifierInactive;
         _profiles.ProfilesChanged += OnProfilesChanged;
 
         RefreshProfileList();
 
         Loaded += OnLoaded;
+        SourceInitialized += OnSourceInitialized;
         Closed += OnClosed;
+        PreviewKeyDown += OnWindowPreviewKeyDown;
+        Deactivated += (_, _) => CancelDInputRemapping();
+        PreviewMouseDown += OnMainWindowPreviewMouseDown;
+    }
+
+    private static void OnSourceInitialized(object? sender, EventArgs e)
+    {
+        if (sender is Window w)
+            StripMinMax(w);
+    }
+
+    private const int GWL_STYLE = -16;
+    private const int WS_MINIMIZEBOX = 0x20000;
+    private const int WS_MAXIMIZEBOX = 0x10000;
+
+    [DllImport("user32.dll")]
+    private static extern int GetWindowLong(IntPtr hWnd, int nIndex);
+    [DllImport("user32.dll")]
+    private static extern int SetWindowLong(IntPtr hWnd, int nIndex, int dwNewLong);
+
+    internal static void StripMinMax(Window w)
+    {
+        var hwnd = new WindowInteropHelper(w).Handle;
+        if (hwnd == IntPtr.Zero) return;
+        int style = GetWindowLong(hwnd, GWL_STYLE);
+        style &= ~WS_MINIMIZEBOX;
+        style &= ~WS_MAXIMIZEBOX;
+        SetWindowLong(hwnd, GWL_STYLE, style);
     }
 
     private void LogInfo(string msg)
@@ -109,10 +145,24 @@ public partial class MainWindow : Window
     private void OnLoaded(object sender, RoutedEventArgs e)
     {
         LogInfo("OnLoaded entered");
+        Initialize();
+        // Show window and overlay
+        _overlay.Show();
+        Activate();
+        LogInfo("OnLoaded complete successfully");
+    }
 
+    /// <summary>
+    /// Sets up all subsystems without making the window visible.
+    /// Call from OnLoaded when showing normally, or directly from App when starting minimized.
+    /// </summary>
+    public void Initialize()
+    {
+        if (_initialized) return;
+        _initialized = true;
         try
         {
-            // Signal to startup watchdog that the window loaded successfully
+            // Signal to startup watchdog that initialization succeeded
             if (Application.Current is App app)
             {
                 app.SignalWindowReady();
@@ -121,55 +171,92 @@ public partial class MainWindow : Window
             else
                 LogInfo("SignalWindowReady FAILED: Application.Current is not App");
 
-            // Force window to be visible and focused
-            Activate();
-
             // Register CTRL+R global hotkey for restart
             var hwnd = new WindowInteropHelper(this).Handle;
             RegisterHotKey(hwnd, HOTKEY_ID_RESTART, MOD_CONTROL | MOD_NOREPEAT, 0x52); // 0x52 = 'R'
 
-            LogInfo("Showing overlay...");
-            _overlay.Show();
+            // Forward window handle to DInput for SetCooperativeLevel (required on XP)
+            _poller.DirectInputWindowHandle = hwnd;
 
             _lastProfileName = _profiles.CurrentProfile.Name;
 
-            var settingsDir = Path.Combine(
-                Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData),
-                "J2MEGamepad");
-            Directory.CreateDirectory(settingsDir);
-            var diagFile = Path.Combine(settingsDir, "diagdelay.txt");
-            if (File.Exists(diagFile) && int.TryParse(File.ReadAllText(diagFile).Trim(), out int savedDiag))
-            {
-                savedDiag = Math.Clamp(savedDiag, 0, 300);
-                DiagDelaySlider.Value = savedDiag;
-                _poller.DiagonalDelayMs = savedDiag;
-                DiagDelayValue.Text = savedDiag == 0 ? "Off" : savedDiag.ToString();
-            }
-            var holdFile = Path.Combine(settingsDir, "diaghold.txt");
-            if (File.Exists(holdFile) && bool.TryParse(File.ReadAllText(holdFile).Trim(), out bool savedHold))
-            {
-                DiagDelayHoldCheckbox.IsChecked = savedHold;
-                _poller.DiagonalDelayHoldCardinals = savedHold;
-            }
-            var perProfileFile = Path.Combine(settingsDir, "diagperprofile.txt");
-            if (File.Exists(perProfileFile) && bool.TryParse(File.ReadAllText(perProfileFile).Trim(), out bool savedPerProfile))
-                DiagDelayPerProfileCheckbox.IsChecked = savedPerProfile;
+            var appSettings = Models.AppSettings.Load();
 
-            var dirDelayFile = Path.Combine(settingsDir, "directional_delay.txt");
-            if (File.Exists(dirDelayFile) && int.TryParse(File.ReadAllText(dirDelayFile).Trim(), out int savedDirDelay))
+            int diagDelay = appSettings.DiagonalDelayMs;
+            DiagDelaySlider.Value = diagDelay;
+            _poller.DiagonalDelayMs = diagDelay;
+            DiagDelayValue.Text = diagDelay == 0 ? "Off" : diagDelay.ToString();
+
+            DiagDelayHoldCheckbox.IsChecked = appSettings.DiagonalDelayHold;
+            _poller.DiagonalDelayHoldCardinals = appSettings.DiagonalDelayHold;
+            DiagDelayPerProfileCheckbox.IsChecked = appSettings.DiagonalDelayPerProfile;
+
+            int dirDelay = appSettings.DirectionalDelayMs;
+            DirDelaySlider.Value = dirDelay;
+            _poller.DirectionalDelayMs = dirDelay;
+            DirDelayValue.Text = dirDelay == 0 ? "Off" : dirDelay.ToString();
+            if (dirDelay > 0)
             {
-                savedDirDelay = Math.Clamp(savedDirDelay, 0, 300);
-                DirDelaySlider.Value = savedDirDelay;
-                _poller.DirectionalDelayMs = savedDirDelay;
-                DirDelayValue.Text = savedDirDelay == 0 ? "Off" : savedDirDelay.ToString();
-                if (savedDirDelay > 0)
-                {
-                    _savedDelayHoldState = DiagDelayHoldCheckbox.IsChecked == true;
-                    DiagDelayHoldCheckbox.IsChecked = false;
-                    DiagDelayHoldCheckbox.IsEnabled = false;
-                }
+                _savedDelayHoldState = appSettings.DiagonalDelayHold;
+                DiagDelayHoldCheckbox.IsChecked = false;
+                DiagDelayHoldCheckbox.IsEnabled = false;
             }
             ApplyDiagonalDelayFromProfile();
+
+            StartMinimizedCheckbox.IsChecked = appSettings.StartMinimized;
+            TerminateIfKemulatorClosedCheckbox.IsChecked = appSettings.TerminateIfKemulatorClosed;
+            if (appSettings.TerminateIfKemulatorClosed)
+            {
+                bool javaAlive = System.Diagnostics.Process.GetProcessesByName("java").Length > 0;
+                if (!javaAlive && !appSettings.TerminateWarningHidden)
+                {
+                    var warn = new Window
+                    {
+                        Title = "KEmulator Not Detected",
+                        Width = 440,
+                        Height = 203,
+                        WindowStartupLocation = WindowStartupLocation.CenterOwner,
+                        Owner = this,
+                        ResizeMode = ResizeMode.NoResize,
+                        Background = Brushes.White,
+                        Topmost = true
+                    };
+                    warn.SourceInitialized += (_, _) => StripMinMax(warn);
+                    var stack = new StackPanel { Margin = new Thickness(20) };
+                    stack.Children.Add(new TextBlock
+                    {
+                        Text = "KEmulator not detected",
+                        FontWeight = FontWeights.Bold,
+                        FontSize = 16,
+                        Margin = new Thickness(0, 0, 0, 12)
+                    });
+                    stack.Children.Add(new TextBlock
+                    {
+                        Text = "The application will open as usual, but it will then latch onto java.exe. If java.exe is terminated, the program will close.",
+                        TextWrapping = TextWrapping.Wrap,
+                        FontSize = 13,
+                        Margin = new Thickness(0, 0, 0, 12)
+                    });
+                    var dontRemind = new CheckBox
+                    {
+                        Content = "Don't show this warning again",
+                        Margin = new Thickness(0, 0, 0, 10)
+                    };
+                    stack.Children.Add(dontRemind);
+                    var okBtn = new Button { Content = "OK", Width = 80, Height = 28, HorizontalAlignment = HorizontalAlignment.Right };
+                    okBtn.Click += (_, _) => warn.Close();
+                    stack.Children.Add(okBtn);
+                    warn.Content = stack;
+                    warn.ShowDialog();
+                    if (dontRemind.IsChecked == true)
+                    {
+                        var termS = Models.AppSettings.Load();
+                        termS.TerminateWarningHidden = true;
+                        termS.Save();
+                    }
+                }
+                StartTerminateMonitoring();
+            }
 
             // Load DInput deadzone from calibration
             var cal = DInputCalibration.Load();
@@ -177,16 +264,24 @@ public partial class MainWindow : Window
             DInputDeadzoneValue.Text = $"{cal.DeadzonePercent}%";
             _poller.ReloadCalibration();
 
+            _comboSettings = ComboSettings.Load();
+
+            BackCyclesCheckbox.IsChecked = appSettings.BackCycles;
+            SkipDefaultCheckbox.IsChecked = appSettings.SkipDefault;
+            DisableComboModifierOSDCheckbox.IsChecked = appSettings.DisableComboModifierOSD;
+            ComboPerProfileCheckbox.IsChecked = appSettings.ComboPerProfile;
+
+            ApplyComboSettingsFromProfile();
+
             ShowFirstRunWarning();
 
             LogInfo("Starting watchdog and poller...");
             _watchdog.Start();
             _poller.Start();
-            LogInfo("OnLoaded complete successfully");
         }
         catch (Exception ex)
         {
-            LogInfo($"OnLoaded exception: {ex.Message}\n{ex.StackTrace}");
+            LogInfo($"Initialize exception: {ex.Message}\n{ex.StackTrace}");
             MessageBox.Show($"Startup error:\n{ex.Message}\n\nDetails saved to crash.log.",
                 "Startup Error", MessageBoxButton.OK, MessageBoxImage.Error);
         }
@@ -194,24 +289,21 @@ public partial class MainWindow : Window
 
     private void ShowFirstRunWarning()
     {
-        var settingsDir = Path.Combine(
-            Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData),
-            "J2MEGamepad");
-        var sentinelFile = Path.Combine(settingsDir, "firstrun.txt");
-        if (File.Exists(sentinelFile)) return;
+        var a = Models.AppSettings.Load();
+        if (a.FirstRunCompleted) return;
 
         var dialog = new Window
         {
             Title = "Important Setup Notice",
             Width = 480,
-            Height = 304,
+            Height = 295,
             WindowStartupLocation = WindowStartupLocation.CenterOwner,
             Owner = this,
-            WindowStyle = WindowStyle.ToolWindow,
             ResizeMode = ResizeMode.NoResize,
             Background = Brushes.White,
             Topmost = true
         };
+        dialog.SourceInitialized += (_, _) => StripMinMax(dialog);
 
         var stack = new StackPanel { Margin = new Thickness(20) };
 
@@ -256,7 +348,34 @@ public partial class MainWindow : Window
         dialog.ShowDialog();
 
         if (dontRemind.IsChecked == true)
-            File.WriteAllText(sentinelFile, "0");
+        {
+            var s = Models.AppSettings.Load();
+            s.FirstRunCompleted = true;
+            s.Save();
+        }
+    }
+
+    /// <summary>
+    /// Releases all held keys and disposes services.
+    /// Safe to call from any context (WPF shutdown, ProcessExit, taskkill).
+    /// </summary>
+    public void ShutdownCleanup()
+    {
+        StopTerminateMonitoring();
+        StopDInputRemapAnimation();
+        _disconnectTimer.Stop();
+        _disconnectTimer.Tick -= DisconnectTimer_Tick;
+        _poller.Dispose();
+        _watchdog.Dispose();
+        _keyboard.Dispose();
+        App.GlobalKeyboard = null;
+        _profiles.Dispose();
+        if (_trayIcon != null)
+        {
+            _trayIcon.Visible = false;
+            _trayIcon.Dispose();
+        }
+        _overlay.Close();
     }
 
     private void OnClosed(object? sender, EventArgs e)
@@ -269,18 +388,18 @@ public partial class MainWindow : Window
         }
         catch { }
 
-        var settingsDir = Path.Combine(
-            Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData),
-            "J2MEGamepad");
-        Directory.CreateDirectory(settingsDir);
-        File.WriteAllText(Path.Combine(settingsDir, "diagdelay.txt"),
-            ((int)DiagDelaySlider.Value).ToString());
-        File.WriteAllText(Path.Combine(settingsDir, "diaghold.txt"),
-            DiagDelayHoldCheckbox.IsChecked.ToString());
-        File.WriteAllText(Path.Combine(settingsDir, "diagperprofile.txt"),
-            DiagDelayPerProfileCheckbox.IsChecked.ToString());
-        File.WriteAllText(Path.Combine(settingsDir, "directional_delay.txt"),
-            ((int)DirDelaySlider.Value).ToString());
+        var s = Models.AppSettings.Load();
+        s.DiagonalDelayMs = (int)DiagDelaySlider.Value;
+        s.DiagonalDelayHold = DiagDelayHoldCheckbox.IsChecked == true;
+        s.DiagonalDelayPerProfile = DiagDelayPerProfileCheckbox.IsChecked == true;
+        s.DirectionalDelayMs = (int)DirDelaySlider.Value;
+        s.StartMinimized = StartMinimizedCheckbox.IsChecked == true;
+        s.TerminateIfKemulatorClosed = TerminateIfKemulatorClosedCheckbox.IsChecked == true;
+        s.BackCycles = BackCyclesCheckbox.IsChecked == true;
+        s.SkipDefault = SkipDefaultCheckbox.IsChecked == true;
+        s.DisableComboModifierOSD = DisableComboModifierOSDCheckbox.IsChecked == true;
+        s.ComboPerProfile = ComboPerProfileCheckbox.IsChecked == true;
+        s.Save();
 
         if (DiagDelayPerProfileCheckbox.IsChecked == true)
         {
@@ -288,15 +407,7 @@ public partial class MainWindow : Window
             _profiles.SaveProfile(_profiles.CurrentProfile);
         }
 
-        StopDInputRemapAnimation();
-        _disconnectTimer.Stop();
-        _disconnectTimer.Tick -= DisconnectTimer_Tick;
-        _poller.Dispose();
-        _watchdog.Dispose();
-        _keyboard.Dispose();
-        _profiles.Dispose();
-        _trayIcon.Dispose();
-        _overlay.Close();
+        ShutdownCleanup();
     }
 
     protected override void OnSourceInitialized(EventArgs e)
@@ -322,16 +433,7 @@ public partial class MainWindow : Window
         LogInfo("CTRL+R restart requested");
         try
         {
-            StopDInputRemapAnimation();
-            _disconnectTimer.Stop();
-            _disconnectTimer.Tick -= DisconnectTimer_Tick;
-            _poller.Dispose();
-            _watchdog.Dispose();
-            _keyboard.Dispose();
-            _profiles.Dispose();
-            _trayIcon.Visible = false;
-            _trayIcon.Dispose();
-            _overlay.Close();
+            ShutdownCleanup();
 
             // Release mutex so the new instance can acquire it
             if (Application.Current is App app)
@@ -363,7 +465,7 @@ public partial class MainWindow : Window
 
     private void DInputDeadzoneSlider_ValueChanged(object sender, RoutedPropertyChangedEventArgs<double> e)
     {
-        int pct = Math.Clamp((int)DInputDeadzoneSlider.Value, 10, 80);
+        int pct = Math.Max(10, Math.Min(80, (int)DInputDeadzoneSlider.Value));
         if (DInputDeadzoneValue == null) return;
         DInputDeadzoneValue.Text = $"{pct}%";
         var cal = DInputCalibration.Load();
@@ -400,6 +502,7 @@ public partial class MainWindow : Window
         {
             _profiles.CurrentProfile.DirectionalDelayMs = val;
             DiagDelayHoldCheckbox.IsEnabled = val == 0;
+            if (val > 0) DiagDelayHoldCheckbox.IsChecked = false;
             return;
         }
 
@@ -438,6 +541,65 @@ public partial class MainWindow : Window
         _poller.DiagonalDelayHoldCardinals = hold;
         DiagDelayHoldCheckbox.IsChecked = hold;
         DiagDelayHoldCheckbox.IsEnabled = dirDelayMs == 0;
+    }
+
+    private void ComboPerProfile_Changed(object sender, RoutedEventArgs e)
+    {
+        var comboSet = Models.AppSettings.Load();
+        comboSet.ComboPerProfile = ComboPerProfileCheckbox.IsChecked == true;
+        comboSet.Save();
+        ApplyComboSettingsFromProfile();
+    }
+
+    private void ApplyComboSettingsFromProfile()
+    {
+        if (ComboPerProfileCheckbox.IsChecked == true)
+        {
+            var profile = _profiles.CurrentProfile;
+            _comboSettings.Actions = new Dictionary<string, List<ushort>>(profile.ComboActions);
+            _comboSettings.OSDNames = new Dictionary<string, string>(profile.ComboOSDNames);
+            _comboSettings.ExecPaths = new Dictionary<string, string>(profile.ComboExecPaths);
+            _poller.ApplyComboSettings(profile.ComboActions, profile.ComboOSDNames, profile.ComboExecPaths);
+        }
+        else
+        {
+            _comboSettings = ComboSettings.Load();
+            _poller.ReloadComboSettings();
+        }
+
+        if (_selectedKeyName != null)
+        {
+            if (ComboActionNames.Contains(_selectedKeyName) || ComboExecActionNames.Contains(_selectedKeyName))
+            {
+                if (_comboSettings.OSDNames.TryGetValue(_selectedKeyName, out var osdName))
+                    ComboOSDNameBox.Text = osdName;
+                else
+                    ComboOSDNameBox.Text = "";
+                if (ComboExecActionNames.Contains(_selectedKeyName) && _comboSettings.ExecPaths.TryGetValue(_selectedKeyName, out var execPath))
+                    ExecPathBox.Text = execPath;
+                else
+                    ExecPathBox.Text = "";
+            }
+        }
+        UpdateCurrentMappingDisplay();
+    }
+
+    private void PersistComboSettings()
+    {
+        if (ComboPerProfileCheckbox.IsChecked == true)
+        {
+            var profile = _profiles.CurrentProfile;
+            profile.ComboActions = new Dictionary<string, List<ushort>>(_comboSettings.Actions);
+            profile.ComboOSDNames = new Dictionary<string, string>(_comboSettings.OSDNames);
+            profile.ComboExecPaths = new Dictionary<string, string>(_comboSettings.ExecPaths);
+            _profiles.SaveProfile(profile);
+            _poller.ApplyComboSettings(profile.ComboActions, profile.ComboOSDNames, profile.ComboExecPaths);
+        }
+        else
+        {
+            _comboSettings.Save();
+            _poller.ReloadComboSettings();
+        }
     }
 
     private void OnProfilesChanged()
@@ -628,6 +790,7 @@ public partial class MainWindow : Window
                     "LT" => "LT",
                     "RT" => "RT",
                     "RightThumb" => "Right Stick Button",
+                    "LeftThumb" => "Left Stick Button",
                     "Back" => "SELECT (Back)",
                     "Start" => "START",
                     "DPadUp" => "D-Pad Up",
@@ -672,6 +835,7 @@ public partial class MainWindow : Window
             };
             ProfileText.Text = _profiles.CurrentProfile.Name;
             ApplyDiagonalDelayFromProfile();
+            ApplyComboSettingsFromProfile();
 
             _overlay.Show();
 
@@ -685,6 +849,44 @@ public partial class MainWindow : Window
             {
                 _overlay.ShowOsd(modeName);
             }
+        });
+    }
+
+    private void OnComboModifierActive(string modName)
+    {
+        Dispatcher.Invoke(() =>
+        {
+            if (DisableComboModifierOSDCheckbox.IsChecked == true) return;
+            _overlay.Show();
+            _overlay.ShowComboModifier();
+        });
+    }
+
+    private void OnComboModifierInactive()
+    {
+        Dispatcher.Invoke(() =>
+        {
+            _overlay.HideComboModifier();
+        });
+    }
+
+    private void DisableComboModifierOSD_Changed(object sender, RoutedEventArgs e)
+    {
+        var s = Models.AppSettings.Load();
+        s.DisableComboModifierOSD = DisableComboModifierOSDCheckbox.IsChecked == true;
+        s.Save();
+        if (DisableComboModifierOSDCheckbox.IsChecked == true)
+            _overlay.HideComboModifier();
+    }
+
+    private void OnComboTriggered(string osdText)
+    {
+        Dispatcher.Invoke(() =>
+        {
+            if (DisableComboModifierOSDCheckbox.IsChecked == true) return;
+            _overlay.HideComboModifier();
+            _overlay.Show();
+            _overlay.ShowOsd(osdText);
         });
     }
 
@@ -724,12 +926,28 @@ public partial class MainWindow : Window
 
             _poller.ReloadDInputMapping();
 
-            string suffix = conflict ? $" (unmapped \"{conflictAction}\")" : "";
-            DInputRemapButton.Content = $"Button {buttonIndex + 1}{suffix}";
+            DInputRemapButton.Content = "Remap button";
             DInputRemapButton.Background = s_defaultButtonBrush;
 
             UpdateCurrentMappingDisplay();
             UpdateDInputListLabels();
+
+            // Auto-advance to next visible item in list
+            int currentIdx = KeyListBox.SelectedIndex;
+            for (int i = currentIdx + 1; i < KeyListBox.Items.Count; i++)
+            {
+                if (KeyListBox.Items[i] is ListBoxItem nextItem && nextItem.Visibility == Visibility.Visible)
+                {
+                    KeyListBox.SelectedItem = nextItem;
+                    _dinputRemapAction = nextItem.Tag as string ?? "";
+                    _isDInputRemapping = true;
+                    _isDInputCapturingButton = true;
+                    _poller.IsRemapping = true;
+                    StartDInputRemapAnimation();
+                    DInputRemapButton.Content = $"Remapping: \"{_dinputRemapAction}\"...";
+                    break;
+                }
+            }
         });
     }
 
@@ -766,35 +984,55 @@ public partial class MainWindow : Window
         }
     }
 
+    private void OnWindowPreviewKeyDown(object sender, KeyEventArgs e)
+    {
+        if (_isDInputCapturingButton && e.Key == Key.Escape)
+        {
+            CancelDInputRemapping();
+            e.Handled = true;
+        }
+    }
+
     private void StartDInputRemapAnimation()
     {
-        StopDInputRemapAnimation();
-        _remapFadeAnimation = new Storyboard();
-
-        var fadeIn = new ColorAnimation
-        {
-            From = Color.FromRgb(0xEE, 0xEE, 0xEE),
-            To = Color.FromRgb(0xFF, 0xCC, 0x66),
-            Duration = TimeSpan.FromMilliseconds(600),
-            AutoReverse = true,
-            RepeatBehavior = RepeatBehavior.Forever
-        };
-
-        Storyboard.SetTarget(fadeIn, DInputRemapButton);
-        Storyboard.SetTargetProperty(fadeIn, new PropertyPath("(Button.Background).(SolidColorBrush.Color)"));
-
-        _remapFadeAnimation.Children.Add(fadeIn);
-        _remapFadeAnimation.Begin(this);
+        DInputRemapButton.Background = new SolidColorBrush(Color.FromRgb(0xFF, 0xCC, 0x66));
     }
 
     private void StopDInputRemapAnimation()
     {
-        if (_remapFadeAnimation != null)
-        {
-            _remapFadeAnimation.Stop();
-            _remapFadeAnimation = null;
-        }
         DInputRemapButton.Background = s_defaultButtonBrush;
+    }
+
+    private void CancelDInputRemapping()
+    {
+        if (!_isDInputRemapping && !_isDInputCapturingButton) return;
+        StopDInputRemapAnimation();
+        _isDInputRemapping = false;
+        _isDInputCapturingButton = false;
+        _dinputRemapAction = "";
+        _poller.IsRemapping = false;
+        DInputRemapButton.Content = "Remap button";
+        DInputRemapButton.Background = s_defaultButtonBrush;
+    }
+
+    private void OnMainWindowPreviewMouseDown(object sender, MouseButtonEventArgs e)
+    {
+        bool anyCapture = _isDInputRemapping || _isDInputCapturingButton || _isCapturingCombo;
+        if (!anyCapture) return;
+
+        var source = e.OriginalSource as DependencyObject;
+        if (source != null)
+        {
+            for (var el = source; el != null; el = VisualTreeHelper.GetParent(el))
+            {
+                if (el == DInputRemapButton) return;
+            }
+        }
+
+        if (_isDInputRemapping || _isDInputCapturingButton)
+            CancelDInputRemapping();
+        if (_isCapturingCombo)
+            CancelComboCapture();
     }
 
     private void CalibrateDpadButton_Click(object sender, RoutedEventArgs e)
@@ -811,11 +1049,11 @@ public partial class MainWindow : Window
             Height = 317,
             WindowStartupLocation = WindowStartupLocation.CenterOwner,
             Owner = this,
-            WindowStyle = WindowStyle.ToolWindow,
             ResizeMode = ResizeMode.NoResize,
             Background = Brushes.White,
             Topmost = true
         };
+        dialog.SourceInitialized += (_, _) => StripMinMax(dialog);
 
         var stack = new StackPanel { Margin = new Thickness(16) };
 
@@ -850,7 +1088,6 @@ public partial class MainWindow : Window
         stack.Children.Add(instructionText);
 
         // 3x3 D-Pad grid
-        var dirNames = new[] { "UpLeft", "Up", "UpRight", "Left", "Center", "Right", "DownLeft", "Down", "DownRight" };
         var dirAbbrev = new Dictionary<string, string>
         {
             ["UpLeft"] = "UL", ["Up"] = "Up", ["UpRight"] = "UR",
@@ -858,12 +1095,9 @@ public partial class MainWindow : Window
             ["DownLeft"] = "DL", ["Down"] = "Dn", ["DownRight"] = "DR"
         };
 
-        var dirGrid = new (string name, int row, int col)[]
-        {
-            ("UpLeft", 0, 0), ("Up", 0, 1), ("UpRight", 0, 2),
-            ("Left", 1, 0), ("Center", 1, 1), ("Right", 1, 2),
-            ("DownLeft", 2, 0), ("Down", 2, 1), ("DownRight", 2, 2),
-        };
+        var dirNames = new[] { "UpLeft", "Up", "UpRight", "Left", "Center", "Right", "DownLeft", "Down", "DownRight" };
+        var dirRows = new[] { 0, 0, 0, 1, 1, 1, 2, 2, 2 };
+        var dirCols = new[] { 0, 1, 2, 0, 1, 2, 0, 1, 2 };
 
         var dpadGrid = new Grid
         {
@@ -877,8 +1111,11 @@ public partial class MainWindow : Window
         }
 
         var dirBoxes = new List<Border>();
-        foreach (var (name, row, col) in dirGrid)
+        for (int idx = 0; idx < dirNames.Length; idx++)
         {
+            var name = dirNames[idx];
+            var row = dirRows[idx];
+            var col = dirCols[idx];
             var box = new Border
             {
                 BorderBrush = Brushes.Gray,
@@ -950,25 +1187,16 @@ public partial class MainWindow : Window
 
         var cal = DInputCalibration.Load();
 
-        // Auto-record center from current rest position
-        var calDiReader = _poller.DirectInputReader;
+        // Auto-record center from current rest position (WinMM only — reliable across controller switches)
         {
             int cx = 32767, cy = 32767;
-            if (calDiReader.Available && calDiReader.Poll())
+            var ji = new JOYINFOEX();
+            ji.dwSize = Marshal.SizeOf(typeof(JOYINFOEX));
+            ji.dwFlags = (int)JoyInput.JOY_RETURNALL;
+            if (JoyInput.GetPosEx(0, ref ji) == JoyInput.JOYERR_NOERROR)
             {
-                cx = calDiReader.X;
-                cy = calDiReader.Y;
-            }
-            else
-            {
-                var ji = new JOYINFOEX();
-                ji.dwSize = Marshal.SizeOf<JOYINFOEX>();
-                ji.dwFlags = JoyInput.JOY_RETURNALL;
-                if (JoyInput.GetPosEx(0, ref ji) == JoyInput.JOYERR_NOERROR)
-                {
-                    cx = ji.dwXpos;
-                    cy = ji.dwYpos;
-                }
+                cx = ji.dwXpos;
+                cy = ji.dwYpos;
             }
             cal.CenterX = cx;
             cal.CenterY = cy;
@@ -978,8 +1206,8 @@ public partial class MainWindow : Window
         var steps = new[] { "Up", "UpRight", "Right", "DownRight", "Down", "DownLeft", "Left", "UpLeft" };
         // Map step names to their index in dirBoxes for highlighting
         var stepToBoxIndex = new Dictionary<string, int>();
-        for (int i = 0; i < dirGrid.Length; i++)
-            stepToBoxIndex[dirGrid[i].name] = i;
+        for (int i = 0; i < dirNames.Length; i++)
+            stepToBoxIndex[dirNames[i]] = i;
 
         int currentStep = 0;
         const double stepDuration = 1.0;
@@ -990,6 +1218,8 @@ public partial class MainWindow : Window
         bool recording = false;
         DateTime stepStartTime = DateTime.UtcNow;
         bool failed = false;
+        int disconnectCount = 0;
+        var recordedSteps = new System.Collections.Generic.HashSet<string>();
 
         var calTimer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(50) };
 
@@ -997,29 +1227,29 @@ public partial class MainWindow : Window
         {
             if (complete) return;
 
+            // Always use WinMM during calibration — DirectInput can lag/stale when
+            // the controller type switched (DInput→XInput→DInput) while poller is stopped.
             int xPos = 32767, yPos = 32767;
-            if (calDiReader.Available && calDiReader.Poll())
+            var ji = new JOYINFOEX();
+            ji.dwSize = Marshal.SizeOf(typeof(JOYINFOEX));
+            ji.dwFlags = (int)JoyInput.JOY_RETURNALL;
+            bool deviceOk = JoyInput.GetPosEx(0, ref ji) == JoyInput.JOYERR_NOERROR;
+            if (deviceOk)
             {
-                xPos = calDiReader.X;
-                yPos = calDiReader.Y;
+                xPos = ji.dwXpos;
+                yPos = ji.dwYpos;
+                disconnectCount = 0;
             }
-            else
+            else if (++disconnectCount >= 10)
             {
-                var ji = new JOYINFOEX();
-                ji.dwSize = Marshal.SizeOf<JOYINFOEX>();
-                ji.dwFlags = JoyInput.JOY_RETURNALL;
-                if (JoyInput.GetPosEx(0, ref ji) == JoyInput.JOYERR_NOERROR)
-                {
-                    xPos = ji.dwXpos;
-                    yPos = ji.dwYpos;
-                }
+                dialog.Close();
+                return;
             }
 
             int cx = cal.CenterX;
             int cy = cal.CenterY;
             int dx = xPos - cx;
             int dy = yPos - cy;
-            int threshold = 13000;
 
             string dirName = steps[currentStep];
             stepText.Text = $"Step {currentStep + 1}/{steps.Length}";
@@ -1031,18 +1261,8 @@ public partial class MainWindow : Window
                     dirBoxes[i].Background = i == boxIdx ? Brushes.LightSkyBlue : Brushes.LightGray;
             }
 
-            bool detected = dirName switch
-            {
-                "Up" => dy < -threshold,
-                "Down" => dy > threshold,
-                "Left" => dx < -threshold,
-                "Right" => dx > threshold,
-                "UpLeft" => dx < -threshold && dy < -threshold,
-                "UpRight" => dx > threshold && dy < -threshold,
-                "DownLeft" => dx < -threshold && dy > threshold,
-                "DownRight" => dx > threshold && dy > threshold,
-                _ => false
-            };
+            // Accept any strong deflection (non-standard gamepads may have inverted/swapped axes)
+            bool detected = Math.Abs(dx) > 13000 || Math.Abs(dy) > 13000;
 
             // Failure state — shown until user re-presses the correct direction
             if (failed)
@@ -1053,6 +1273,15 @@ public partial class MainWindow : Window
                 statusText.Foreground = Brushes.Red;
                 if (detected)
                 {
+                    if (IsDuplicateCalibrationInput(xPos, yPos, cx, cy, recordedSteps, cal))
+                    {
+                        countdownText.Text = "SAME INPUT";
+                        countdownText.Foreground = Brushes.Red;
+                        statusText.Text = $"Same as prior step — press DIFFERENT for \"{dirName}\".";
+                        statusText.Foreground = Brushes.Red;
+                        progressBar.Value = 0;
+                        return;
+                    }
                     failed = false;
                     recording = true;
                     stepStartTime = DateTime.UtcNow;
@@ -1078,6 +1307,18 @@ public partial class MainWindow : Window
                     return;
                 }
 
+                if (IsDuplicateCalibrationInput(xPos, yPos, cx, cy, recordedSteps, cal))
+                {
+                    countdownText.Text = "SAME INPUT";
+                    countdownText.Foreground = Brushes.Red;
+                    statusText.Text = $"Same as prior step — press DIFFERENT for \"{dirName}\".";
+                    statusText.Foreground = Brushes.Red;
+                    progressBar.Value = 0;
+                    recording = false;
+                    elapsed = 0;
+                    return;
+                }
+
                 sampleSumX += xPos;
                 sampleSumY += yPos;
                 sampleCount++;
@@ -1093,6 +1334,8 @@ public partial class MainWindow : Window
                 progressBar.Foreground = SystemColors.HighlightBrush;
                 int avgX = (int)(sampleSumX / sampleCount);
                 int avgY = (int)(sampleSumY / sampleCount);
+
+                recordedSteps.Add(dirName);
 
                 switch (dirName)
                 {
@@ -1145,6 +1388,15 @@ public partial class MainWindow : Window
             // Wait for D-Pad input — immediate start (no debounce)
             if (detected)
             {
+                if (IsDuplicateCalibrationInput(xPos, yPos, cx, cy, recordedSteps, cal))
+                {
+                    countdownText.Text = "SAME INPUT";
+                    countdownText.Foreground = Brushes.Red;
+                    statusText.Text = $"Same as prior step — press DIFFERENT for \"{dirName}\".";
+                    statusText.Foreground = Brushes.Red;
+                    progressBar.Value = 0;
+                    return;
+                }
                 recording = true;
                 stepStartTime = DateTime.UtcNow;
                 sampleSumX = 0;
@@ -1173,6 +1425,37 @@ public partial class MainWindow : Window
         _poller.Start();
     }
 
+    private static bool IsDuplicateCalibrationInput(int xPos, int yPos, int cx, int cy, HashSet<string> recordedSteps, DInputCalibration cal)
+    {
+        if (recordedSteps.Count == 0) return false;
+
+        double newAngle = Math.Atan2(-(yPos - cy), (xPos - cx)) * 180.0 / Math.PI;
+        if (newAngle < 0) newAngle += 360;
+
+        foreach (var prevStep in recordedSteps)
+        {
+            int px = 0, py = 0;
+            switch (prevStep)
+            {
+                case "Up": px = cal.UpX; py = cal.UpY; break;
+                case "Down": px = cal.DownX; py = cal.DownY; break;
+                case "Left": px = cal.LeftX; py = cal.LeftY; break;
+                case "Right": px = cal.RightX; py = cal.RightY; break;
+                case "UpLeft": px = cal.UpLeftX; py = cal.UpLeftY; break;
+                case "UpRight": px = cal.UpRightX; py = cal.UpRightY; break;
+                case "DownLeft": px = cal.DownLeftX; py = cal.DownLeftY; break;
+                case "DownRight": px = cal.DownRightX; py = cal.DownRightY; break;
+            }
+            double prevAngle = Math.Atan2(-(py - cy), (px - cx)) * 180.0 / Math.PI;
+            if (prevAngle < 0) prevAngle += 360;
+
+            double diff = Math.Abs(newAngle - prevAngle);
+            if (diff > 180) diff = 360 - diff;
+            if (diff < 20.0) return true;
+        }
+        return false;
+    }
+
     private void KeysHintButton_Click(object sender, RoutedEventArgs e)
     {
         using var stream = Assembly.GetExecutingAssembly().GetManifestResourceStream("J2MEGamepad.Keys.txt");
@@ -1186,26 +1469,9 @@ public partial class MainWindow : Window
         using var reader = new StreamReader(stream);
         var content = reader.ReadToEnd();
 
-        var settingsDir = Path.Combine(
-            Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData),
-            "J2MEGamepad");
-        Directory.CreateDirectory(settingsDir);
-        var fontFile = Path.Combine(settingsDir, "keysfont.txt");
-        int fontSize = 18;
-        if (File.Exists(fontFile) && int.TryParse(File.ReadAllText(fontFile).Trim(), out int savedSize))
-            fontSize = Math.Clamp(savedSize, 8, 36);
-
-        var sizeFile = Path.Combine(settingsDir, "keyssize.txt");
-        double winWidth = 593, winHeight = 682;
-        if (File.Exists(sizeFile))
-        {
-            var parts = File.ReadAllText(sizeFile).Trim().Split('x');
-            if (parts.Length == 2 && double.TryParse(parts[0], out double sw) && double.TryParse(parts[1], out double sh))
-            {
-                winWidth = Math.Max(sw, 300);
-                winHeight = Math.Max(sh, 200);
-            }
-        }
+        var ks = Models.AppSettings.Load();
+        int fontSize = ks.KeysFontSize;
+        double winWidth = ks.KeysWindowWidth, winHeight = ks.KeysWindowHeight;
 
         var hintWindow = new Window
         {
@@ -1214,10 +1480,10 @@ public partial class MainWindow : Window
             Height = winHeight,
             WindowStartupLocation = WindowStartupLocation.CenterOwner,
             Owner = this,
-            WindowStyle = WindowStyle.ToolWindow,
             ResizeMode = ResizeMode.CanResize,
             Background = System.Windows.Media.Brushes.Black
         };
+        hintWindow.SourceInitialized += (_, _) => StripMinMax(hintWindow);
 
         var scroll = new System.Windows.Controls.ScrollViewer
         {
@@ -1244,7 +1510,7 @@ public partial class MainWindow : Window
             if (Keyboard.Modifiers == ModifierKeys.Control)
             {
                 int delta = args.Delta > 0 ? 1 : -1;
-                int newSize = Math.Clamp(fontSize + delta, 8, 36);
+                int newSize = Math.Max(8, Math.Min(36, fontSize + delta));
                 if (newSize != fontSize)
                 {
                     fontSize = newSize;
@@ -1256,8 +1522,11 @@ public partial class MainWindow : Window
 
         hintWindow.Closed += (_, _) =>
         {
-            File.WriteAllText(fontFile, fontSize.ToString());
-            File.WriteAllText(sizeFile, $"{hintWindow.Width}x{hintWindow.Height}");
+            var s = Models.AppSettings.Load();
+            s.KeysFontSize = fontSize;
+            s.KeysWindowWidth = hintWindow.Width;
+            s.KeysWindowHeight = hintWindow.Height;
+            s.Save();
         };
         hintWindow.ShowDialog();
     }
@@ -1267,31 +1536,116 @@ public partial class MainWindow : Window
         HideToTray();
     }
 
+    private void StartMinimizedCheckbox_Changed(object sender, RoutedEventArgs e)
+    {
+        var s = Models.AppSettings.Load();
+        s.StartMinimized = StartMinimizedCheckbox.IsChecked == true;
+        s.Save();
+    }
+
+    private void TerminateIfKemulatorClosed_Changed(object sender, RoutedEventArgs e)
+    {
+        bool isChecked = TerminateIfKemulatorClosedCheckbox.IsChecked == true;
+        var s = Models.AppSettings.Load();
+        s.TerminateIfKemulatorClosed = isChecked;
+        s.Save();
+        if (isChecked)
+            StartTerminateMonitoring();
+        else
+            StopTerminateMonitoring();
+    }
+
+    private void StartTerminateMonitoring()
+    {
+        StopTerminateMonitoring();
+        _javaSeenOnce = false;
+        _terminateTimer = new System.Timers.Timer(2000);
+        _terminateTimer.Elapsed += (_, _) =>
+        {
+            try
+            {
+                bool running = System.Diagnostics.Process.GetProcessesByName("java").Length > 0;
+                if (running)
+                    _javaSeenOnce = true;
+                else if (_javaSeenOnce && !Dispatcher.HasShutdownStarted)
+                    Dispatcher.Invoke(() => { ShutdownCleanup(); Close(); });
+            }
+            catch { }
+        };
+        _terminateTimer.Start();
+    }
+
+    private void StopTerminateMonitoring()
+    {
+        if (_terminateTimer != null)
+        {
+            _terminateTimer.Stop();
+            _terminateTimer.Dispose();
+            _terminateTimer = null;
+        }
+    }
+
+    private static string SettingsDir()
+    {
+        var dir = Path.Combine(
+            Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData),
+            "J2MEGamepad");
+        Directory.CreateDirectory(dir);
+        return dir;
+    }
+
+    internal bool StartMinimized()
+    {
+        try
+        {
+            if (_trayIcon == null) return false;
+            _trayIcon.Visible = true;
+            // Verify tray icon actually became visible
+            if (!_trayIcon.Visible) return false;
+            ShowInTaskbar = false;
+            WindowState = WindowState.Minimized;
+            Hide();
+            return true;
+        }
+        catch (Exception ex)
+        {
+            LogInfo($"StartMinimized exception: {ex.Message}");
+            return false;
+        }
+    }
+
     private void HideToTray()
     {
         _trayIcon.Visible = true;
-        this.Hide();
+        ShowInTaskbar = false;
+        WindowState = WindowState.Minimized;
+        Hide();
+    }
+
+    private void ShowFromTray()
+    {
+        ShowInTaskbar = true;
+        WindowState = WindowState.Normal;
+        Show();
+        Activate();
+        _trayIcon.Visible = false;
+        if (!_overlay.IsVisible)
+            _overlay.Show();
     }
 
     private void TrayIcon_Click(object? sender, EventArgs e)
     {
-        Show();
-        Activate();
-        _trayIcon.Visible = false;
+        ShowFromTray();
     }
 
     private void TrayIcon_DoubleClick(object? sender, EventArgs e)
     {
-        Show();
-        Activate();
-        _trayIcon.Visible = false;
+        ShowFromTray();
     }
 
     private void Show_Click(object? sender, EventArgs e)
     {
-        Show();
-        Activate();
-        _trayIcon.Visible = false;
+        ShowFromTray();
     }
 
     private void Exit_Click(object? sender, EventArgs e)
@@ -1303,11 +1657,17 @@ public partial class MainWindow : Window
     private void BackCycles_Changed(object sender, RoutedEventArgs e)
     {
         _poller.BackCyclesYxab = BackCyclesCheckbox.IsChecked == true;
+        var s = Models.AppSettings.Load();
+        s.BackCycles = BackCyclesCheckbox.IsChecked == true;
+        s.Save();
     }
 
     private void SkipDefault_Changed(object sender, RoutedEventArgs e)
     {
         _poller.SkipDefault = SkipDefaultCheckbox.IsChecked == true;
+        var s = Models.AppSettings.Load();
+        s.SkipDefault = SkipDefaultCheckbox.IsChecked == true;
+        s.Save();
     }
 
     private void UpdateSkipDefaultState()
@@ -1326,11 +1686,8 @@ public partial class MainWindow : Window
         KeyListBox.IsEnabled = !isDefault;
         KeyCaptureBox.IsEnabled = !isDefault && _selectedKeyName != null;
         IsDefaultCheckbox.IsEnabled = !isDefault;
-        RenameProfileButton.IsEnabled = !isDefault;
-        SaveProfileButton.IsEnabled = !isDefault;
         DeleteProfileButton.IsEnabled = !isDefault;
         ProfileNameBox.IsEnabled = !isDefault;
-        ExportProfileButton.IsEnabled = !isDefault || _profiles.UserProfileCount > 0;
     }
 
     private void RefreshProfileList()
@@ -1359,7 +1716,7 @@ public partial class MainWindow : Window
             var profile = _profiles.Profiles.FirstOrDefault(p => p.Name == name);
             if (profile != null)
             {
-                _profiles.CurrentProfileIndex = _profiles.Profiles.IndexOf(profile);
+                _profiles.SetCurrentProfileByName(profile.Name);
                 ProfileNameBox.Text = profile.Name;
                 ProfileText.Text = profile.Name;
                 _lastProfileName = profile.Name;
@@ -1367,7 +1724,8 @@ public partial class MainWindow : Window
                 UpdateCurrentMappingDisplay();
                 UpdateProfileEditingState();
                 UpdateSkipDefaultState();
-                ApplyDiagonalDelayFromProfile();
+            ApplyDiagonalDelayFromProfile();
+            ApplyComboSettingsFromProfile();
             }
         }
     }
@@ -1388,8 +1746,14 @@ public partial class MainWindow : Window
                 profile.DirectionalDelayMs = _profiles.CurrentProfile.DirectionalDelayMs;
                 profile.DiagonalDelayHoldCardinals = _profiles.CurrentProfile.DiagonalDelayHoldCardinals;
             }
+            if (ComboPerProfileCheckbox.IsChecked == true)
+            {
+                profile.ComboActions = new Dictionary<string, List<ushort>>(_profiles.CurrentProfile.ComboActions);
+                profile.ComboOSDNames = new Dictionary<string, string>(_profiles.CurrentProfile.ComboOSDNames);
+                profile.ComboExecPaths = new Dictionary<string, string>(_profiles.CurrentProfile.ComboExecPaths);
+            }
             _profiles.SaveProfile(profile);
-            _profiles.CurrentProfileIndex = _profiles.Profiles.IndexOf(profile);
+            _profiles.SetCurrentProfileByName(profile.Name);
             _lastProfileName = profile.Name;
             RefreshProfileList();
         });
@@ -1417,62 +1781,6 @@ public partial class MainWindow : Window
         }
     }
 
-    private void RenameProfile_Click(object sender, RoutedEventArgs e)
-    {
-        SafeInvoke(() =>
-        {
-            if (_profiles.CurrentProfile.Name == "Default") return;
-            var newName = ProfileNameBox.Text.Trim();
-            if (string.IsNullOrEmpty(newName))
-            {
-                MessageBox.Show("Enter a new profile name in the text box first.", "Rename Profile",
-                    MessageBoxButton.OK, MessageBoxImage.Information);
-                return;
-            }
-            if (!ValidateProfileName(newName)) return;
-            if (newName == _profiles.CurrentProfile.Name) return;
-            if (_profiles.Profiles.Any(p => p.Name == newName))
-            {
-                MessageBox.Show("A profile with this name already exists.", "Rename Profile",
-                    MessageBoxButton.OK, MessageBoxImage.Warning);
-                return;
-            }
-            _profiles.RenameProfile(_profiles.CurrentProfile.Name, newName);
-            _lastProfileName = newName;
-            RefreshProfileList();
-        });
-    }
-
-    private void SaveProfile_Click(object sender, RoutedEventArgs e)
-    {
-        SafeInvoke(() =>
-        {
-            if (_profiles.CurrentProfile.Name == "Default") return;
-            var name = ProfileNameBox.Text.Trim();
-            if (string.IsNullOrEmpty(name))
-            {
-                MessageBox.Show("Enter a profile name.", "Save Profile", MessageBoxButton.OK, MessageBoxImage.Information);
-                return;
-            }
-            if (!ValidateProfileName(name)) return;
-            var profile = _profiles.Profiles.FirstOrDefault(p => p.Name == name);
-            if (profile == null)
-            {
-                profile = new KeyMapProfile { Name = name };
-            }
-            if (DiagDelayPerProfileCheckbox.IsChecked == true)
-            {
-                profile.DiagonalDelayMs = (int)DiagDelaySlider.Value;
-                profile.DirectionalDelayMs = (int)DirDelaySlider.Value;
-                profile.DiagonalDelayHoldCardinals = DiagDelayHoldCheckbox.IsChecked == true;
-            }
-            _profiles.SaveProfile(profile);
-            _profiles.CurrentProfileIndex = _profiles.Profiles.IndexOf(profile);
-            _lastProfileName = profile.Name;
-            RefreshProfileList();
-        });
-    }
-
     private void DeleteProfile_Click(object sender, RoutedEventArgs e)
     {
         SafeInvoke(() =>
@@ -1487,101 +1795,148 @@ public partial class MainWindow : Window
         });
     }
 
-    private void ImportProfile_Click(object sender, RoutedEventArgs e)
+    private void ProfileNameBox_KeyDown(object sender, System.Windows.Input.KeyEventArgs e)
     {
-        var dialog = new Microsoft.Win32.OpenFileDialog
-        {
-            Title = "Import Profile",
-            Filter = "JSON files (*.json)|*.json|All files (*.*)|*.*",
-            DefaultExt = ".json"
-        };
-        if (dialog.ShowDialog() == true)
-        {
-            try
-            {
-                var json = File.ReadAllText(dialog.FileName);
-                var finalName = Path.GetFileNameWithoutExtension(dialog.FileName);
-                if (finalName.Length > 18)
-                {
-                    finalName = finalName[..18];
-                    MessageBox.Show("Filename was truncated to 18 characters for the profile name.",
-                        "Name Truncated", MessageBoxButton.OK, MessageBoxImage.Information);
-                }
-                int counter = 1;
-                var baseName = finalName;
-                while (_profiles.Profiles.Any(p => p.Name == finalName))
-                {
-                    var suffix = $" ({counter})";
-                    var maxBase = 18 - suffix.Length;
-                    finalName = (baseName.Length > maxBase ? baseName[..maxBase] : baseName) + suffix;
-                    counter++;
-                }
-                _profiles.ImportProfile(json, finalName);
-                RefreshProfileList();
-                MessageBox.Show($"Profile \"{finalName}\" imported successfully.", "Import",
-                    MessageBoxButton.OK, MessageBoxImage.Information);
-            }
-            catch (Exception ex)
-            {
-                MessageBox.Show($"Failed to import profile: {ex.Message}", "Import Error",
-                    MessageBoxButton.OK, MessageBoxImage.Error);
-            }
-        }
+        if (e.Key == System.Windows.Input.Key.Enter)
+            PerformRename();
     }
 
-    private void ExportProfile_Click(object sender, RoutedEventArgs e)
+    private void ProfileNameBox_LostFocus(object sender, RoutedEventArgs e)
     {
-        var name = _profiles.CurrentProfile.Name;
-        if (name == "Default" && _profiles.UserProfileCount == 0)
-        {
-            MessageBox.Show("No user profile selected to export.", "Export",
-                MessageBoxButton.OK, MessageBoxImage.Information);
-            return;
-        }
-
-        var dialog = new Microsoft.Win32.SaveFileDialog
-        {
-            Title = $"Export Profile - {name}",
-            FileName = $"{name}.json",
-            Filter = "JSON files (*.json)|*.json|All files (*.*)|*.*",
-            DefaultExt = ".json"
-        };
-        if (dialog.ShowDialog() == true)
-        {
-            try
-            {
-                var json = _profiles.ExportProfile(name);
-                File.WriteAllText(dialog.FileName, json);
-                MessageBox.Show($"Profile \"{name}\" exported successfully.", "Export",
-                    MessageBoxButton.OK, MessageBoxImage.Information);
-            }
-            catch (Exception ex)
-            {
-                MessageBox.Show($"Failed to export profile: {ex.Message}", "Export Error",
-                    MessageBoxButton.OK, MessageBoxImage.Error);
-            }
-        }
+        PerformRename();
     }
+
+    private void PerformRename()
+    {
+        SafeInvoke(() =>
+        {
+            if (_profiles.CurrentProfile.Name == "Default") return;
+            var newName = ProfileNameBox.Text.Trim();
+            if (string.IsNullOrEmpty(newName) || newName == _profiles.CurrentProfile.Name) return;
+            if (!ValidateProfileName(newName)) return;
+            if (_profiles.Profiles.Any(p => p.Name == newName))
+            {
+                ProfileNameBox.Text = _profiles.CurrentProfile.Name;
+                return;
+            }
+            var oldName = _profiles.CurrentProfile.Name;
+            _profiles.RenameProfile(oldName, newName);
+            _lastProfileName = newName;
+            _profiles.SetCurrentProfileByName(newName);
+            RefreshProfileList();
+        });
+    }
+
+    private void OpenConfigFolder_Click(object sender, RoutedEventArgs e)
+    {
+        var dir = System.IO.Path.Combine(
+            Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData),
+            "J2MEGamepad", "profiles");
+        System.IO.Directory.CreateDirectory(dir);
+        System.Diagnostics.Process.Start("explorer.exe", dir);
+    }
+
+    private static readonly HashSet<string> ComboActionNames = new()
+    {
+        "RB+LB+Y", "RB+LB+X", "RB+LB+A", "RB+LB+B",
+        "RT+LT+Y", "RT+LT+X", "RT+LT+A", "RT+LT+B",
+    };
+
+    private static readonly HashSet<string> ComboExecActionNames = new()
+    {
+        "RB+LB+Start", "RB+LB+Back",
+        "RT+LT+Start", "RT+LT+Back",
+    };
 
     private void KeyListBox_SelectionChanged(object sender, System.Windows.Controls.SelectionChangedEventArgs e)
     {
+        CancelComboCapture();
         if (KeyListBox.SelectedItem is System.Windows.Controls.ListBoxItem item)
         {
             _selectedKeyName = item.Tag as string;
-            IsDefaultCheckbox.IsChecked = !_profiles.CurrentProfile.Mappings.ContainsKey(_selectedKeyName ?? "");
+            bool isCombo = _selectedKeyName != null && ComboActionNames.Contains(_selectedKeyName);
+            bool isExec = _selectedKeyName != null && ComboExecActionNames.Contains(_selectedKeyName);
+
+            KeyCaptureBox.Visibility = isExec ? Visibility.Collapsed : Visibility.Visible;
+            IsDefaultCheckbox.Visibility = isCombo || isExec ? Visibility.Collapsed : Visibility.Visible;
+            ComboControlPanel.Visibility = isCombo || isExec ? Visibility.Visible : Visibility.Collapsed;
+            ExecPathPanel.Visibility = isExec ? Visibility.Visible : Visibility.Collapsed;
+            DInputActionPanel.Visibility = isCombo || isExec ? Visibility.Collapsed : (_isDInputMode ? Visibility.Visible : Visibility.Collapsed);
+            DInputDeadzonePanel.Visibility = isCombo || isExec ? Visibility.Collapsed : (_isDInputMode ? Visibility.Visible : Visibility.Collapsed);
+
+            if (isCombo || isExec)
+            {
+                IsDefaultCheckbox.IsChecked = false;
+                if (_comboSettings.OSDNames.TryGetValue(_selectedKeyName, out var osdName))
+                    ComboOSDNameBox.Text = osdName;
+                else
+                    ComboOSDNameBox.Text = "";
+                if (isExec && _comboSettings.ExecPaths.TryGetValue(_selectedKeyName, out var execPath))
+                    ExecPathBox.Text = execPath;
+                else if (isExec)
+                    ExecPathBox.Text = "";
+            }
+            else
+            {
+                IsDefaultCheckbox.IsChecked = !_profiles.CurrentProfile.Mappings.ContainsKey(_selectedKeyName ?? "");
+            }
+
+            LeftThumbWarningText.Visibility = _selectedKeyName == "LeftThumb" ? Visibility.Visible : Visibility.Collapsed;
+
             UpdateCurrentMappingDisplay();
+        }
+        else
+        {
+            ComboControlPanel.Visibility = Visibility.Collapsed;
+            IsDefaultCheckbox.Visibility = Visibility.Visible;
+            KeyCaptureBox.Visibility = Visibility.Visible;
+            DInputActionPanel.Visibility = _isDInputMode ? Visibility.Visible : Visibility.Collapsed;
+            DInputDeadzonePanel.Visibility = _isDInputMode ? Visibility.Visible : Visibility.Collapsed;
+            LeftThumbWarningText.Visibility = Visibility.Collapsed;
         }
     }
 
     private void UpdateCurrentMappingDisplay()
     {
         KeyCaptureBox.Background = new System.Windows.Media.SolidColorBrush(System.Windows.Media.Color.FromRgb(0xEE, 0xEE, 0xEE));
+        KeyCaptureText.Text = "Click to capture";
+        ExecIconImage.Source = null;
+        ExecIconImage.Visibility = Visibility.Collapsed;
         if (_selectedKeyName == null)
         {
             CurrentMappingText.Text = "(none selected)";
             KeyCaptureBox.IsEnabled = false;
             return;
         }
+
+        if (ComboExecActionNames.Contains(_selectedKeyName))
+        {
+            KeyCaptureBox.IsEnabled = false;
+            if (_comboSettings.ExecPaths.TryGetValue(_selectedKeyName, out var exePath) && !string.IsNullOrEmpty(exePath))
+            {
+                CurrentMappingText.Text = System.IO.Path.GetFileName(exePath);
+                var icon = ExtractAssociatedIcon(exePath);
+                if (icon != null)
+                {
+                    ExecIconImage.Source = icon;
+                    ExecIconImage.Visibility = Visibility.Visible;
+                }
+            }
+            else
+                CurrentMappingText.Text = "(no executable assigned)";
+            return;
+        }
+
+        if (ComboActionNames.Contains(_selectedKeyName))
+        {
+            KeyCaptureBox.IsEnabled = true;
+            if (_comboSettings.Actions.TryGetValue(_selectedKeyName, out var keys) && keys.Count > 0)
+                CurrentMappingText.Text = string.Join(" + ", keys.Select(k => GetKeyNameFromVK(k)));
+            else
+                CurrentMappingText.Text = "(no combo assigned)";
+            return;
+        }
+
         KeyCaptureBox.IsEnabled = _profiles.CurrentProfile.Name != "Default";
 
         if (_isDInputMode)
@@ -1594,7 +1949,6 @@ public partial class MainWindow : Window
             else
                 CurrentMappingText.Text = "(not mapped)";
 
-            // Show keyboard key in the capture box (same as XInput mode)
             if (IsDefaultCheckbox.IsChecked == true)
             {
                 KeyCaptureText.Text = GetDefaultKeyName(_selectedKeyName);
@@ -1633,15 +1987,23 @@ public partial class MainWindow : Window
         {
             if (!_profiles.CurrentProfile.Mappings.ContainsKey(_selectedKeyName))
             {
-                _profiles.CurrentProfile.Mappings[_selectedKeyName] = GetDefaultKeyValue(_selectedKeyName);
+                ushort defaultVal = GetDefaultKeyValue(_selectedKeyName);
+                if (defaultVal != 0)
+                    _profiles.CurrentProfile.Mappings[_selectedKeyName] = defaultVal;
                 KeyCaptureBox.IsEnabled = _profiles.CurrentProfile.Name != "Default";
             }
         }
+        _profiles.SaveProfile(_profiles.CurrentProfile);
         UpdateCurrentMappingDisplay();
     }
 
     private void KeyCaptureBox_MouseDown(object sender, MouseButtonEventArgs e)
     {
+        if (_selectedKeyName != null && ComboActionNames.Contains(_selectedKeyName))
+        {
+            StartComboCapture();
+            return;
+        }
         if (_profiles.CurrentProfile.Name == "Default") return;
         if (!_isCapturingKey)
         {
@@ -1659,18 +2021,59 @@ public partial class MainWindow : Window
         e.Handled = true;
         ushort vk = (ushort)KeyInterop.VirtualKeyFromKey(key);
         var keyName = GetKeyNameFromVK(vk);
-        if (_selectedKeyName != null && IsDefaultCheckbox.IsChecked != true)
+        if (_selectedKeyName != null)
         {
-            _profiles.CurrentProfile.Mappings[_selectedKeyName] = vk;
-            CurrentMappingText.Text = keyName;
-            if (!_customKeyWarningShown && _profiles.CurrentProfile.Name != "Default")
+            if (IsDefaultCheckbox.IsChecked == true)
+                IsDefaultCheckbox.IsChecked = false;
+            if (IsDefaultCheckbox.IsChecked != true)
             {
-                _customKeyWarningShown = true;
-                MessageBox.Show(
-                    "Custom keybinds should only be used if you have changed\nKEmulator's default keys.\n\nStick with the default key layout unless you know what you're doing.",
-                    "Custom Keybind Warning",
-                    MessageBoxButton.OK,
-                    MessageBoxImage.Warning);
+                _profiles.CurrentProfile.Mappings[_selectedKeyName] = vk;
+                CurrentMappingText.Text = keyName;
+                _profiles.SaveProfile(_profiles.CurrentProfile);
+                if (!_customKeyWarningShown && _profiles.CurrentProfile.Name != "Default")
+                {
+                    _customKeyWarningShown = true;
+                    var warnSettings = Models.AppSettings.Load();
+                    if (warnSettings.CustomWarningHidden)
+                        goto afterWarning;
+                    var warn = new Window
+                    {
+                        Title = "Custom Keybind Warning",
+                        Width = 440,
+                        Height = 189,
+                        WindowStartupLocation = WindowStartupLocation.CenterOwner,
+                        Owner = this,
+                        ResizeMode = ResizeMode.NoResize,
+                        Background = Brushes.White,
+                        Topmost = true
+                    };
+                    warn.SourceInitialized += (_, _) => StripMinMax(warn);
+                    var stack = new StackPanel { Margin = new Thickness(20) };
+                    stack.Children.Add(new TextBlock
+                    {
+                        Text = "Custom keybinds should only be used if you have changed KEmulator's default keys. Stick with the default key layout unless you know what you're doing.",
+                        TextWrapping = TextWrapping.Wrap,
+                        FontSize = 13,
+                        Margin = new Thickness(0, 0, 0, 12)
+                    });
+                    var dontRemind = new CheckBox
+                    {
+                        Content = "Don't show this warning again",
+                        Margin = new Thickness(0, 0, 0, 10)
+                    };
+                    stack.Children.Add(dontRemind);
+                    var okBtn = new Button { Content = "OK", Width = 80, Height = 28, HorizontalAlignment = HorizontalAlignment.Right };
+                    okBtn.Click += (_, _) => warn.Close();
+                    stack.Children.Add(okBtn);
+                    warn.Content = stack;
+                    warn.ShowDialog();
+                    if (dontRemind.IsChecked == true)
+                    {
+                        warnSettings.CustomWarningHidden = true;
+                        warnSettings.Save();
+                    }
+                }
+                afterWarning: ;
             }
         }
         KeyCaptureText.Text = keyName;
@@ -1679,11 +2082,205 @@ public partial class MainWindow : Window
         this.PreviewKeyDown -= OnCaptureKeyDown;
     }
 
+    private bool _isCapturingCombo;
+
+    private void StartComboCapture()
+    {
+        if (_isCapturingCombo) return;
+
+        _isCapturingCombo = true;
+        KeyCaptureText.Text = "Press a key combo...";
+        KeyCaptureBox.Background = System.Windows.Media.Brushes.LightYellow;
+        CurrentMappingText.Text = "Press key combo...";
+        this.PreviewKeyDown += OnCaptureComboKeyDown;
+    }
+
+    private void CancelComboCapture()
+    {
+        _isCapturingCombo = false;
+        this.PreviewKeyDown -= OnCaptureComboKeyDown;
+        UpdateCurrentMappingDisplay();
+    }
+
+    private void OnCaptureComboKeyDown(object sender, KeyEventArgs e)
+    {
+        if (!_isCapturingCombo || _selectedKeyName == null) return;
+
+        var key = e.Key == Key.System ? e.SystemKey : e.Key;
+
+        // Ignore pure modifier keys (Ctrl, Shift, Alt, Win) as standalone captures
+        if (key == Key.LeftCtrl || key == Key.RightCtrl ||
+            key == Key.LeftShift || key == Key.RightShift ||
+            key == Key.LeftAlt || key == Key.RightAlt ||
+            key == Key.LWin || key == Key.RWin)
+        {
+            e.Handled = true;
+            return;
+        }
+
+        e.Handled = true;
+
+        var keys = new List<ushort>();
+
+        // Detect modifiers from Keyboard.Modifiers
+        if ((Keyboard.Modifiers & ModifierKeys.Control) != 0)
+            keys.Add(0x11); // VK_CONTROL
+        if ((Keyboard.Modifiers & ModifierKeys.Shift) != 0)
+            keys.Add(0x10); // VK_SHIFT
+        if ((Keyboard.Modifiers & ModifierKeys.Alt) != 0)
+            keys.Add(0x12); // VK_MENU
+
+        ushort mainVk = (ushort)KeyInterop.VirtualKeyFromKey(key);
+        keys.Add(mainVk);
+
+        // Store the combo globally
+        _comboSettings.Actions[_selectedKeyName] = keys;
+
+        // Auto-generate OSD name if not set
+        if (!_comboSettings.OSDNames.TryGetValue(_selectedKeyName, out var existing) || string.IsNullOrEmpty(existing))
+        {
+            _comboSettings.OSDNames[_selectedKeyName] = string.Join("+", keys.Select(k => GetKeyNameFromVK(k)));
+        }
+        PersistComboSettings();
+
+        ComboOSDNameBox.Text = _comboSettings.OSDNames[_selectedKeyName];
+
+        CancelComboCapture();
+    }
+
+    private void ClearComboButton_Click(object sender, RoutedEventArgs e)
+    {
+        if (_selectedKeyName == null || (!ComboActionNames.Contains(_selectedKeyName) && !ComboExecActionNames.Contains(_selectedKeyName)))
+            return;
+
+        bool isExec = ComboExecActionNames.Contains(_selectedKeyName);
+        _comboSettings.Actions.Remove(_selectedKeyName);
+        if (isExec)
+            _comboSettings.ExecPaths.Remove(_selectedKeyName);
+        _comboSettings.OSDNames.Remove(_selectedKeyName);
+        PersistComboSettings();
+        ComboOSDNameBox.Text = "";
+        if (isExec)
+            ExecPathBox.Text = "";
+        else
+            KeyCaptureText.Text = "Click to capture";
+        UpdateCurrentMappingDisplay();
+    }
+
+    private void ComboOSDNameBox_TextChanged(object sender, System.Windows.Controls.TextChangedEventArgs e)
+    {
+        if (_selectedKeyName == null || (!ComboActionNames.Contains(_selectedKeyName) && !ComboExecActionNames.Contains(_selectedKeyName)))
+            return;
+
+        var name = ComboOSDNameBox.Text.Trim();
+        if (!string.IsNullOrEmpty(name))
+        {
+            _comboSettings.OSDNames[_selectedKeyName] = name;
+        }
+        else
+        {
+            var defaultName = GetDefaultComboOSDName(_selectedKeyName);
+            if (defaultName != null)
+            {
+                _comboSettings.OSDNames[_selectedKeyName] = defaultName;
+                ComboOSDNameBox.Text = defaultName;
+            }
+            else
+            {
+                _comboSettings.OSDNames.Remove(_selectedKeyName);
+            }
+        }
+        PersistComboSettings();
+    }
+
+    private string? GetDefaultComboOSDName(string comboName)
+    {
+        if (ComboExecActionNames.Contains(comboName))
+        {
+            if (_comboSettings.ExecPaths.TryGetValue(comboName, out var execPath) && !string.IsNullOrEmpty(execPath))
+                return comboName.Replace("RB+LB+", "").Replace("RT+LT+", "");
+            return null;
+        }
+        if (_comboSettings.Actions.TryGetValue(comboName, out var keys) && keys.Count > 0)
+        {
+            return string.Join("+", keys.Select(k => GetKeyNameFromVK(k)));
+        }
+        return null;
+    }
+
+    private void BrowseExecButton_Click(object sender, RoutedEventArgs e)
+    {
+        if (_selectedKeyName == null || !ComboExecActionNames.Contains(_selectedKeyName))
+            return;
+
+        var dialog = new Microsoft.Win32.OpenFileDialog
+        {
+            Title = "Select executable to launch",
+            Filter = "Executables (*.exe;*.bat;*.ps1;*.cmd)|*.exe;*.bat;*.ps1;*.cmd|All files (*.*)|*.*",
+            DefaultExt = ".exe",
+            CheckFileExists = true
+        };
+        if (dialog.ShowDialog() == true)
+        {
+            ExecPathBox.Text = dialog.FileName;
+        }
+    }
+
+    private void OpenExecButton_Click(object sender, RoutedEventArgs e)
+    {
+        if (_selectedKeyName == null || !ComboExecActionNames.Contains(_selectedKeyName))
+            return;
+
+        var path = ExecPathBox.Text.Trim();
+        if (string.IsNullOrEmpty(path)) return;
+        path = System.IO.Path.GetFullPath(path);
+        if (!File.Exists(path)) return;
+
+        string ext = System.IO.Path.GetExtension(path);
+        if (!GamepadPoller.AllowedExecExtensions.Contains(ext))
+        {
+            MessageBox.Show($"Cannot launch \"{path}\": file type \"{ext}\" is not in the allowed list.",
+                "Launch Blocked", MessageBoxButton.OK, MessageBoxImage.Warning);
+            return;
+        }
+
+        try
+        {
+            System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo
+            {
+                FileName = path,
+                UseShellExecute = true
+            });
+        }
+        catch (Exception ex)
+        {
+            MessageBox.Show($"Failed to launch: {ex.Message}", "Launch Error",
+                MessageBoxButton.OK, MessageBoxImage.Error);
+        }
+    }
+
+    private void ExecPathBox_TextChanged(object sender, System.Windows.Controls.TextChangedEventArgs e)
+    {
+        if (_selectedKeyName == null || !ComboExecActionNames.Contains(_selectedKeyName))
+            return;
+
+        var path = ExecPathBox.Text.Trim();
+        if (!string.IsNullOrEmpty(path))
+        {
+            _comboSettings.ExecPaths[_selectedKeyName] = path;
+            // Clear any stale key binding when exec path is set
+            _comboSettings.Actions.Remove(_selectedKeyName);
+        }
+        else
+        {
+            _comboSettings.ExecPaths.Remove(_selectedKeyName);
+        }
+        PersistComboSettings();
+        UpdateCurrentMappingDisplay();
+    }
+
     private string GetDInputDeviceName()
     {
-        var di = _poller.DirectInputReader;
-        if (di?.DebugInfo?.StartsWith("OK: ") == true)
-            return di.DebugInfo[4..];
         return "DInput controller";
     }
 
@@ -1697,14 +2294,16 @@ public partial class MainWindow : Window
             else
                 _dinputMapping = new DInputMapping();
         }
-        catch
+        catch (Exception ex)
         {
+            LogHelper.Error("MainWindow", "ReloadDInputMapping", ex);
             _dinputMapping = new DInputMapping();
         }
     }
 
     private static string GetKeyNameFromVK(ushort vk)
     {
+        if (vk == 0) return "Unassigned";
         if (vk >= 0x30 && vk <= 0x39) return $"{(char)('0' + (vk - 0x30))}";
         if (vk >= 0x41 && vk <= 0x5A) return $"{(char)('A' + (vk - 0x41))}";
         if (vk >= 0x70 && vk <= 0x7A) return $"F{vk - 0x70 + 1}";
@@ -1714,6 +2313,10 @@ public partial class MainWindow : Window
             0x08 => "Backspace",
             0x09 => "Tab",
             0x0D => "Enter",
+            0x10 => "Shift",
+            0x11 => "Ctrl",
+            0x12 => "Alt",
+            0x14 => "CapsLock",
             0x1B => "Escape",
             0x20 => "Space",
             0x25 => "Left Arrow",
@@ -1756,15 +2359,16 @@ public partial class MainWindow : Window
     {
         return keyName switch
         {
-            "Y" => "Num *",
+            "Y" => "Num 0",
             "X" => "F1",
-            "A" => "Enter / Num 5",
+            "A" => "F3 / Num 5",
             "B" => "F2",
             "LB" => "Num *",
             "RB" => "Num /",
             "LT" => "F1",
             "RT" => "F2",
-            "RightThumb" => "Enter",
+            "RightThumb" => "F3",
+            "LeftThumb" => "Unassigned",
             _ => "Unknown"
         };
     }
@@ -1773,16 +2377,55 @@ public partial class MainWindow : Window
     {
         return keyName switch
         {
-            "Y" => 0x6A,
+            "Y" => 0x60,
             "X" => 0x70,
-            "A" => 0x0D,
+            "A" => 0x72,
             "B" => 0x71,
             "LB" => 0x6A,
             "RB" => 0x6F,
             "LT" => 0x70,
             "RT" => 0x71,
-            "RightThumb" => 0x0D,
+            "RightThumb" => 0x72,
+            "LeftThumb" => 0,
             _ => 0
         };
+    }
+
+    private static System.Windows.Media.ImageSource? ExtractAssociatedIcon(string path)
+    {
+        try
+        {
+            if (string.IsNullOrEmpty(path)) return null;
+            path = System.IO.Path.GetFullPath(path);
+            if (!System.IO.File.Exists(path)) return null;
+            string ext = System.IO.Path.GetExtension(path);
+            if (!GamepadPoller.AllowedExecExtensions.Contains(ext)) return null;
+            using var icon = System.Drawing.Icon.ExtractAssociatedIcon(path);
+            if (icon == null) return null;
+            return System.Windows.Interop.Imaging.CreateBitmapSourceFromHIcon(
+                icon.Handle,
+                System.Windows.Int32Rect.Empty,
+                System.Windows.Media.Imaging.BitmapSizeOptions.FromEmptyOptions());
+        }
+        catch
+        {
+            return null;
+        }
+    }
+
+    private static System.Drawing.Icon LoadAppIcon()
+    {
+        try
+        {
+            var uri = new Uri("pack://application:,,,/icon.ico", UriKind.RelativeOrAbsolute);
+            var info = System.Windows.Application.GetResourceStream(uri);
+            if (info == null) return System.Drawing.SystemIcons.Application;
+            using var stream = info.Stream;
+            return new System.Drawing.Icon(stream);
+        }
+        catch
+        {
+            return System.Drawing.SystemIcons.Application;
+        }
     }
 }

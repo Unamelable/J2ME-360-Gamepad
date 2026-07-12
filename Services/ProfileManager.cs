@@ -30,7 +30,12 @@ public class ProfileManager : IDisposable
         get
         {
             lock (_lock)
-                return _profiles.Count > 0 ? _profiles[CurrentProfileIndex] : new KeyMapProfile();
+            {
+                if (_profiles.Count == 0) return new KeyMapProfile();
+                if (CurrentProfileIndex < 0 || CurrentProfileIndex >= _profiles.Count)
+                    CurrentProfileIndex = 0;
+                return _profiles[CurrentProfileIndex];
+            }
         }
     }
 
@@ -95,6 +100,10 @@ public class ProfileManager : IDisposable
     {
         lock (_lock)
         {
+            string? previousName = _profiles.Count > 0 && CurrentProfileIndex >= 0 && CurrentProfileIndex < _profiles.Count
+                ? _profiles[CurrentProfileIndex].Name
+                : null;
+
             _profiles.Clear();
             _profiles.Add(new KeyMapProfile());
 
@@ -109,12 +118,22 @@ public class ProfileManager : IDisposable
                         if (profile != null && profile.Name != "Default")
                             _profiles.Add(profile);
                     }
-                    catch { }
+                    catch (Exception ex) { LogHelper.Error("ProfileManager", "LoadProfiles", ex); }
                 }
             }
 
             if (_profiles.Count == 0)
                 _profiles.Add(new KeyMapProfile());
+
+            if (previousName != null)
+            {
+                int idx = _profiles.FindIndex(p => p.Name == previousName);
+                CurrentProfileIndex = idx >= 0 ? idx : 0;
+            }
+            else
+            {
+                CurrentProfileIndex = 0;
+            }
         }
     }
 
@@ -179,6 +198,17 @@ public class ProfileManager : IDisposable
                      && attempts < _profiles.Count
                      && UserProfileCount > 0);
             return CurrentProfileIndex;
+        }
+    }
+
+    public bool SetCurrentProfileByName(string name)
+    {
+        lock (_lock)
+        {
+            int idx = _profiles.FindIndex(p => p.Name == name);
+            if (idx < 0) return false;
+            CurrentProfileIndex = idx;
+            return true;
         }
     }
 

@@ -2,22 +2,27 @@
 
   <PropertyGroup>
     <OutputType>WinExe</OutputType>
-    <TargetFramework>net8.0-windows</TargetFramework>
+    <TargetFramework>net40-windows</TargetFramework>
     <UseWPF>true</UseWPF>
     <UseWindowsForms>true</UseWindowsForms>
     <Nullable>enable</Nullable>
+    <LangVersion>latest</LangVersion>
     <StartupObject>J2MEGamepad.App</StartupObject>
-    <AssemblyTitle>J2ME 360 Gamepad</AssemblyTitle>
-    <Product>J2ME 360 Gamepad</Product>
-    <AssemblyName>J2ME 360 Gamepad</AssemblyName>
+    <AssemblyTitle>J2MEGamepad</AssemblyTitle>
+    <Product>J2MEGamepad</Product>
+    <AssemblyName>J2MEGamepad</AssemblyName>
+    <ApplicationIcon>icon.ico</ApplicationIcon>
+    <NoWarn>NU1903;CS8625;CS8618;CS0168;CS8601;CS8604;CS0169</NoWarn>
   </PropertyGroup>
 
   <ItemGroup>
     <EmbeddedResource Include="Keys.txt" />
+    <Resource Include="icon.ico" />
   </ItemGroup>
 
   <ItemGroup>
-    <PackageReference Include="SharpDX.DirectInput" Version="4.2.0" />
+    <PackageReference Include="Microsoft.NETFramework.ReferenceAssemblies" Version="1.0.3" PrivateAssets="all" />
+    <PackageReference Include="Newtonsoft.Json" Version="12.0.3" />
   </ItemGroup>
 
 </Project>

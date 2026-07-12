@@ -1,9 +1,9 @@
 using System;
 using System.Diagnostics;
 using System.IO;
-using System.Runtime.InteropServices;
 using System.Threading;
 using System.Windows;
+using System.Windows.Interop;
 using J2MEGamepad.Services;
 using J2MEGamepad.Windows;
 
@@ -11,9 +11,13 @@ namespace J2MEGamepad;
 
 public partial class App : Application
 {
-    private static Mutex? _mutex;
+    private static Mutex? s_mutex;
     private MainWindow? _mainWindow;
     private readonly ManualResetEvent _windowReadyEvent = new(false);
+
+    private static bool s_shutdownPerformed;
+
+    internal static KeyboardInjector? GlobalKeyboard { get; set; }
 
     public void SignalWindowReady()
     {
@@ -22,7 +26,9 @@ public partial class App : Application
 
     protected override void OnStartup(StartupEventArgs e)
     {
-        LogHelper.Info("App", $"=== App starting (Runtime: {RuntimeInformation.FrameworkDescription}, OS: {RuntimeInformation.OSDescription}) ===");
+        DllSafety.HardenNativeLoading();
+
+        LogHelper.Info("App", $"=== App starting (Runtime: .NET Framework {Environment.Version}, OS: {Environment.OSVersion}) ===");
 
         AppDomain.CurrentDomain.UnhandledException += (_, args) =>
         {
@@ -35,15 +41,19 @@ public partial class App : Application
             LogHelper.Info("App", "Dispatcher handled=true (app continues)");
             args.Handled = true;
         };
+        AppDomain.CurrentDomain.ProcessExit += (_, _) =>
+        {
+            PerformShutdown();
+        };
 
         try
         {
-            const string mutexName = "J2MEGamepad-SingleInstanceMutex";
+            const string mutexName = @"Local\J2MEGamepad-D4E7A1F0-9B3C-4F6E-8A2B-1C5D7E9F0A3B";
             bool createdNew;
 
             try
             {
-                _mutex = new Mutex(true, mutexName, out createdNew);
+                s_mutex = new Mutex(true, mutexName, out createdNew);
 
                 if (!createdNew)
                 {
@@ -55,28 +65,35 @@ public partial class App : Application
 
                     if (result == MessageBoxResult.Yes)
                     {
-                        _mutex.Dispose();
-                        _mutex = null;
+                        s_mutex.Dispose();
+                        s_mutex = null;
 
-                        // Kill all other instances of this process
                         var currentPid = Process.GetCurrentProcess().Id;
+                        using var currentProcess = Process.GetCurrentProcess();
+                        string? myPath = currentProcess.MainModule?.FileName;
                         foreach (var proc in Process.GetProcessesByName(
-                            Process.GetCurrentProcess().ProcessName))
+                            currentProcess.ProcessName))
                         {
-                            if (proc.Id != currentPid)
+                            if (proc.Id == currentPid) continue;
+                            try
                             {
-                                try { proc.Kill(); proc.WaitForExit(3000); } catch { }
+                                string? otherPath = proc.MainModule?.FileName;
+                                if (!string.IsNullOrEmpty(myPath) &&
+                                    string.Equals(otherPath, myPath, StringComparison.OrdinalIgnoreCase))
+                                {
+                                    proc.Kill();
+                                    proc.WaitForExit(3000);
+                                }
                             }
+                            catch { }
                         }
 
-                        // Re-acquire mutex (may be abandoned after kill)
                         try
                         {
-                            _mutex = new Mutex(true, mutexName, out createdNew);
+                            s_mutex = new Mutex(true, mutexName, out createdNew);
                         }
                         catch (AbandonedMutexException)
                         {
-                            // Mutex was abandoned after kill — ownership transferred
                             createdNew = true;
                         }
 
@@ -97,7 +114,6 @@ public partial class App : Application
             }
             catch (AbandonedMutexException)
             {
-                // Previous instance crashed — we can take ownership
                 createdNew = true;
             }
 
@@ -108,26 +124,55 @@ public partial class App : Application
                 using (var p = Process.GetCurrentProcess())
                     p.PriorityClass = ProcessPriorityClass.BelowNormal;
             }
-            catch { /* non-admin: ignore priority change failure */ }
+            catch { }
 
             LogHelper.Info("App", "Creating MainWindow...");
             _mainWindow = new MainWindow();
-            LogHelper.Info("App", "Showing MainWindow...");
-            _mainWindow.Show();
 
-            // Startup watchdog: if window doesn't signal ready within 6 seconds,
-            // the UI thread may be hung. Show a notification and restart.
+            var appSettings = J2MEGamepad.Models.AppSettings.Load();
+            bool startMinimized = appSettings.StartMinimized;
+
+            if (startMinimized)
+            {
+                try
+                {
+                    new WindowInteropHelper(_mainWindow).EnsureHandle();
+                    _mainWindow.Initialize();
+                    if (!_mainWindow.StartMinimized())
+                    {
+                        LogHelper.Info("App", "Tray icon failed, showing window instead");
+                        _mainWindow.Show();
+                    }
+                    else
+                    {
+                        LogHelper.Info("App", "Started minimized to tray");
+                    }
+                }
+                catch (Exception ex)
+                {
+                    LogHelper.Error("App", "Minimized startup failed, showing window", ex);
+                    _mainWindow.Show();
+                }
+            }
+            else
+            {
+                LogHelper.Info("App", "Showing MainWindow...");
+                _mainWindow.Show();
+            }
+
             var watchdogThread = new Thread(() =>
             {
                 if (_windowReadyEvent.WaitOne(TimeSpan.FromSeconds(6)))
                     return;
 
-                // Window never signaled ready — release mutex so new instance can start
-                _mutex?.Dispose();
-                _mutex = null;
+                s_mutex?.Dispose();
+                s_mutex = null;
 
-                var exePath = Process.GetCurrentProcess().MainModule?.FileName ?? "J2ME 360 Gamepad.exe";
-                try { Process.Start(exePath); } catch { }
+                var exePath = Process.GetCurrentProcess().MainModule?.FileName;
+                if (!string.IsNullOrEmpty(exePath))
+                {
+                    try { Process.Start(exePath); } catch { }
+                }
 
                 Dispatcher.Invoke(() =>
                 {
@@ -153,13 +198,32 @@ public partial class App : Application
 
     protected override void OnExit(ExitEventArgs e)
     {
-        if (_mutex != null) { _mutex.Dispose(); _mutex = null; }
-        _windowReadyEvent.Dispose();
+        PerformShutdown();
         base.OnExit(e);
     }
 
     public void ReleaseMutexForRestart()
     {
-        if (_mutex != null) { _mutex.Dispose(); _mutex = null; }
+        if (s_mutex != null) { s_mutex.Dispose(); s_mutex = null; }
+    }
+
+    public static void PerformShutdown()
+    {
+        if (s_shutdownPerformed) return;
+        s_shutdownPerformed = true;
+
+        LogHelper.Info("App", "PerformShutdown: releasing keyboard and cleaning up");
+
+        try
+        {
+            GlobalKeyboard?.Dispose();
+        }
+        catch (Exception ex)
+        {
+            LogHelper.Error("App", "PerformShutdown keyboard release", ex);
+        }
+
+        s_mutex?.Dispose();
+        s_mutex = null;
     }
 }

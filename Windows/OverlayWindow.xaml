@@ -35,6 +35,23 @@
             </Border>
         </Border>
 
+        <Border x:Name="ComboModifierBorder"
+                HorizontalAlignment="Center"
+                VerticalAlignment="Center"
+                Background="#80003333"
+                CornerRadius="8"
+                Padding="24,12"
+                Opacity="0">
+            <TextBlock x:Name="ComboModifierText"
+                       Foreground="Cyan"
+                       FontSize="28"
+                       FontWeight="Bold"
+                       HorizontalAlignment="Center"
+                       VerticalAlignment="Center"
+                       Text=""
+                       TextAlignment="Center" />
+        </Border>
+
         <Border x:Name="OsdBorder"
                 HorizontalAlignment="Center"
                 VerticalAlignment="Center"

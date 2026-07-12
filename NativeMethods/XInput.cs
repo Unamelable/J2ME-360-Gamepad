@@ -48,7 +48,7 @@ public static class XInputButtons
 
 public static class XInput
 {
-    private const string DllName = "xinput1_4.dll";
+    private const string DllName = "xinput1_3.dll";
 
     [DllImport(DllName, EntryPoint = "XInputGetState")]
     private static extern uint XInputGetStateNative(int dwUserIndex, out XInputState pState);
