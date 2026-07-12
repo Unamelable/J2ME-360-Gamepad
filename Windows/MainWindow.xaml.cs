@@ -2179,6 +2179,19 @@ public partial class MainWindow : Window
         }
         else
         {
+            _comboSettings.OSDNames.Remove(_selectedKeyName);
+        }
+        PersistComboSettings();
+    }
+
+    private void ComboOSDNameBox_LostFocus(object sender, RoutedEventArgs e)
+    {
+        if (_selectedKeyName == null || (!ComboActionNames.Contains(_selectedKeyName) && !ComboExecActionNames.Contains(_selectedKeyName)))
+            return;
+
+        var name = ComboOSDNameBox.Text.Trim();
+        if (string.IsNullOrEmpty(name))
+        {
             var defaultName = GetDefaultComboOSDName(_selectedKeyName);
             if (defaultName != null)
             {
@@ -2189,8 +2202,8 @@ public partial class MainWindow : Window
             {
                 _comboSettings.OSDNames.Remove(_selectedKeyName);
             }
+            PersistComboSettings();
         }
-        PersistComboSettings();
     }
 
     private string? GetDefaultComboOSDName(string comboName)

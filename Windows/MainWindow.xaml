@@ -261,8 +261,9 @@
                                 <TextBlock Grid.Column="0" Text="OSD name:" FontWeight="Bold"
                                            VerticalAlignment="Center" Margin="0,0,6,0"/>
                                 <TextBox Grid.Column="1" x:Name="ComboOSDNameBox" Text="" MaxLength="30"
-                                         ToolTip="Enter the OSD display name for this combo"
-                                         TextChanged="ComboOSDNameBox_TextChanged"/>
+                                          ToolTip="Enter the OSD display name for this combo"
+                                          TextChanged="ComboOSDNameBox_TextChanged"
+                                          LostFocus="ComboOSDNameBox_LostFocus"/>
                                 <Button Grid.Column="2" x:Name="ClearComboButton"
                                         Content="Clear"
                                         Padding="6,2"
