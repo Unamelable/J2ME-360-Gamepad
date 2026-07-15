@@ -204,7 +204,7 @@ Maps action names to DInput button indices. Serializable as JSON.
 
 Centralized application settings stored as a single JSON file (`%APPDATA%\J2MEGamepad\app_settings.json`).
 
-**Properties**: `Version`, `StartMinimized`, `TerminateIfKemulatorClosed`, `TerminateWarningHidden`, `DiagonalDelayMs`, `DirectionalDelayMs`, `DiagonalDelayHold` (default true), `DiagonalDelayPerProfile`, `BackCycles`, `SkipDefault`, `ComboPerProfile`, `DisableComboModifierOSD`, `FirstRunCompleted`, `CustomWarningHidden`, `KeysFontSize` (18), `KeysWindowWidth` (593), `KeysWindowHeight` (682).
+**Properties**: `Version`, `StartMinimized`, `TerminateIfKemulatorClosed`, `TerminateWarningHidden`, `DiagonalDelayMs`, `DirectionalDelayMs`, `DiagonalDelayHold` (default true), `DiagonalDelayPerProfile`, `BackCycles`, `SkipDefault`, `ComboPerProfile`, `DisableComboModifierOSD`, `ComboConfirmationHold`, `FirstRunCompleted`, `CustomWarningHidden`, `KeysFontSize` (18), `KeysWindowWidth` (593), `KeysWindowHeight` (682).
 
 **Migration**: On first load (version 0), migrates from legacy individual txt files (`diagdelay.txt`, `directional_delay.txt`, `diaghold.txt`, `diagperprofile.txt`, `comboperprofile.txt`, `disable_combo_modifier_osd.txt`, `terminate.txt`, `terminate_warning_hidden.txt`, `start_minimized.txt`, `firstrun.txt`, `custom_warning_hidden.txt`, `keysfont.txt`, `keyssize.txt`) and saves as v1 JSON.
 
@@ -398,6 +398,7 @@ Core polling engine. Runs at 8ms (125 Hz) via `System.Timers.Timer`. Alternates 
 | `DInputCalibration`          | Exposes current calibration data.                                                                                  |
 | `DirectInputReader`          | Exposes the (unused) DirectInput8 reader instance.                                                                 |
 | `DirectInputWindowHandle`    | HWND for SetCooperativeLevel (required on Windows XP).                                                             |
+| `ComboConfirmationHold`      | When true, combo face/exec buttons require a 1-second hold before firing. During hold the OSD shows the combo name in green; releasing early cancels the action. |
 
 **Events**
 
@@ -411,6 +412,8 @@ Core polling engine. Runs at 8ms (125 Hz) via `System.Timers.Timer`. Alternates 
 | `ComboTriggered`      | `string` | Fired when a combo action is triggered (OSD display name).                   |
 | `ComboModifierActive` | `string` | Fired when RB+LB or RT+LT combo modifier is engaged.                         |
 | `ComboModifierInactive` | (none) | Fired when combo modifier is released.                                       |
+| `ComboConfirmationPending` | `string` | Fired when combo confirmation hold starts (OSD display name).               |
+| `ComboConfirmationCancelled` | (none) | Fired when combo confirmation is cancelled (face button or modifier released before timer). |
 
 **Methods**
 
@@ -593,7 +596,8 @@ Main configuration window. Fixed-size `ToolWindow`, `NoResize`. Strips minimize/
 | `OnModeChanged(string)`                                                                                            | `GamepadPoller.ModeChanged`            | Updates DPAD mode text, profile text, applies diagonal delay and combo from profile. Shows OSD: cross-fade for profile switch (`"YXAB:"` prefix), fade-in/out for DPAD mode.                                                                                                                                                                       |
 | `OnComboTriggered(string)`                                                                                          | `GamepadPoller.ComboTriggered`         | Shows OSD with combo name (unless `DisableComboModifierOSD`).                                                                                                                                                                                                                                                                                      |
 | `OnComboModifierActive(string)` / `OnComboModifierInactive()`                                                       | `GamepadPoller.ComboModifier*`         | Shows/hides combo modifier indicator on overlay (unless `DisableComboModifierOSD`).                                                                                                                                                                                                                                                                |
-| `ShowDInputListItems(bool)`                                                                                        | Internal                               | Shows/hides DInput-specific ListBox items (Back, Start, D-Pad directions). Deselects system buttons when hiding.                                                                                                                                                                                                                                  |
+| `OnComboConfirmationPending(string)` / `OnComboConfirmationCancelled()`                                              | `GamepadPoller.ComboConfirmation*`    | Shows/hides combo confirmation hold OSD (lime text on dark green). On cancellation, re-shows the modifier prompt.                                                                                                                                                                |
+| `ShowDInputListItems(bool)`                                                                                        | Internal                               | Shows/hides DInput-specific ListBox items (Back, Start, D-Pad directions). Deselects system buttons when hiding.                                                                                                                                                                  |
 | `UpdateDInputListLabels()` / `RestoreXInputListLabels()`                                                           | Internal                               | Toggle ListBox labels between DInput button indices and human-readable XInput names.                                                                                                                                                                                                                                                               |
 | `ShowDisconnectedWarning()`                                                                                        | Disconnect                             | Shows overlay with disconnect text (named if previously connected), starts 60s timer to change to "WAITING FOR CONTROLLER...".                                                                                                                                                                                                                     |
 | `DInputRemapButton_Click(...)`                                                                                     | Remap button                           | Toggles DInput remapping mode. Active: amber background, "Remapping: \"{action}\"..." label. Cancel: restores default.                                                                                                                                                                                                                             |
@@ -630,6 +634,7 @@ Main configuration window. Fixed-size `ToolWindow`, `NoResize`. Strips minimize/
 | `StartTerminateMonitoring()` / `StopTerminateMonitoring()`                                                   | Internal                          | 2s timer watches for `java.exe`. On first sighting marks `_javaSeenOnce = true`. If java disappears afterwards, calls `ShutdownCleanup()` + `Close()`.                                                                                                                                                   |
 | `OpenConfigFolder_Click(...)`                                                                                | Config folder button              | Opens `%AppData%\J2MEGamepad\profiles\` in Explorer.                                                                                                                                                                                                                                                      |
 | `DisableComboModifierOSD_Changed(...)`                                                                       | Disable combo modifier OSD checkbox | Toggles combo modifier OSD visibility.                                                                                                                                                                                                                                                                |
+| `ComboConfirmationHold_Changed(...)`                                                                         | Confirmation combo-hold checkbox     | Toggles combo confirmation hold mode: requires 1s hold of face/exec button before firing. Saves to `AppSettings.ComboConfirmationHold`.                                                                                                                                                                   |
 | `DisconnectTimer_Tick(...)`                                                                                  | 60s timer                         | Changes disconnected overlay text to "WAITING FOR CONTROLLER..." after 60 seconds.                                                                                                                                                                                                                        |
 | `HideToTray()` / `ShowFromTray()` / `TrayIcon_DoubleClick(...)` / `StartMinimized()`                          | Tray lifecycle                    | Standard tray icon show/hide/start-minimized behavior.                                                                                                                                                                                                                                                    |
 
@@ -655,6 +660,7 @@ Transparent full-screen click-through OSD overlay. Uses `WS_EX_NOACTIVATE` and `
 | ------------------------------------- | --------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `DisconnectedBorder` (yellow box)     | 0               | "XBOX 360 CONTROLLER NOT DETECTED" text. Dark yellow background (`#80333300`), yellow foreground, 32pt bold. Content set dynamically via `SetDisconnectedText()`. |
 | `ComboModifierBorder` (cyan box)      | 0               | "Press combo key..." text. Dark cyan background (`#80003333`), cyan foreground, 28pt bold. Infinite fade-in/out pulse while combo modifier is active.             |
+| `ConfirmationOsdBorder` (green box)   | 0               | Combo confirmation hold overlay. Dark green background (`#80003300`), lime foreground, 28pt bold. Shown when holding a combo button during confirmation hold.     |
 | `OsdBorder` (dark box)                | 0               | Dark semi-transparent background (`#80000000`), white 28pt bold text. Content set dynamically.                                                                    |
 
 **Methods**
@@ -670,6 +676,8 @@ Transparent full-screen click-through OSD overlay. Uses `WS_EX_NOACTIVATE` and `
 | `ShowOsdSwap(string old, string new)`         | Cross-fade profile swap: 150ms fade-out of old text → DispatcherTimer swaps text → 150ms fade-in of new text → hold 700ms → 500ms border fade-out. Total ~1.5s.                                |
 | `ShowComboModifier()`                         | Shows combo modifier indicator (dark cyan overlay box, "Press combo key..." text) with infinite fade-in/out pulse.                                                                             |
 | `HideComboModifier()`                         | Hides combo modifier indicator immediately.                                                                                                                                                    |
+| `ShowComboConfirmation(string text)`          | Shows combo confirmation overlay (dark green background, lime text). Stays visible until confirmed or cancelled — no animation, static display.                                               |
+| `HideComboConfirmation()`                     | Hides combo confirmation overlay immediately.                                                                                                                                                  |
 | `ShowLastOsd()`                               | Re-shows the last OSD message (used when overlay becomes visible again after being hidden).                                                                                                    |
 
 ---
@@ -753,6 +761,7 @@ All action buttons use **hold behavior** (press on down, release on up), not tap
 | **Profile swap (via gamepad)**<br/><br/><img width="550" alt="Profile swap animation" src="https://github.com/user-attachments/assets/0598ee6f-2113-48af-a84c-94a5458af455" /> | Crossfade old name → new name | ~1.5s |
 | **Combo triggered (key sequence / exec launch)**<br/><br/><img width="550" alt="J2MEGamepad_gSxtZ7kQUW" src="https://github.com/user-attachments/assets/154254e2-872e-4eff-8cee-88be87558251" /> | Fade in → hold → fade out | ~1.5s |
 | **Combo modifier active (RB+LB / RT+LT)**<br/><br/><img width="550" alt="J2MEGamepad_MBweB5tliq" src="https://github.com/user-attachments/assets/1fb8e81e-9d3d-41d5-8025-98a9f86dce1e" /> | Semi-transparent overlay box | While held |
+| **Combo confirmation hold** | Static green overlay box with combo name | Up to 1s (until confirmed or cancelled) |
 | **Controller disconnected**<br/><br/><img width="550" alt="Controller disconnected animation" src="https://github.com/user-attachments/assets/90300b3c-b334-4f15-bcfd-f27c90b3ab21" /> | Infinite yellow pulse (0→0.8→0) | 2.5s per cycle |
 | Controller reconnected | Immediate hide | Instant |
 
@@ -856,9 +865,17 @@ When a modifier is active, the shoulder/trigger keys are released (preventing sp
 
 Executable launches are restricted to safe extensions: `.exe`, `.bat`, `.cmd`, `.com`, `.ps1`. Paths are canonicalized with `Path.GetFullPath` and validated for existence before execution.
 
-### OSD Display
+### Confirmation Combo-Hold
 
-Combo modifier activation shows a persistent indicator (can be disabled via "Disable combo modifier OSD" checkbox). Combo trigger events show a standard OSD fade animation with the configured display name (or auto-generated from key names).
+When the **"Confirmation combo-hold"** checkbox is enabled, pressing a combo face button (Y/X/A/B) or combo-exec button (Start/Back) while a modifier is active does **not** fire the action immediately. Instead:
+
+1. **Hold requirement** — The button must be held for **1 second** while the modifier remains held.
+2. **OSD feedback** — During the hold the OSD shows the configured combo name in **vivid green** on a dark green background, replacing the "Press combo key..." modifier prompt.
+3. **On confirmation** — If held for the full second, the combo fires normally and the OSD transitions to the standard white/gray fade animation.
+4. **On cancel** — If the face/exec button is released before the timer expires, the action is silently cancelled and the modifier prompt ("Press combo key...") reappears. If the modifier itself is released, all OSD elements are hidden.
+5. **Empty combo** — Combos with no key sequence and no executable path assigned are silently ignored (no OSD shown).
+
+The setting is saved in `AppSettings.ComboConfirmationHold` and persisted to `app_settings.json`.
 
 ---
 
