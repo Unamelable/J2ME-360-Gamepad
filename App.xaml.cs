@@ -33,7 +33,8 @@ public partial class App : Application
         AppDomain.CurrentDomain.UnhandledException += (_, args) =>
         {
             LogHelper.Error("App", "AppDomain unhandled", (Exception)args.ExceptionObject);
-            LogHelper.Info("App", "AppDomain unhandled -> process will exit");
+            LogHelper.Info("App", "AppDomain unhandled -> releasing keys before exit");
+            PerformShutdown();
         };
         DispatcherUnhandledException += (_, args) =>
         {

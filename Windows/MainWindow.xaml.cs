@@ -148,9 +148,8 @@ public partial class MainWindow : Window
     {
         LogInfo("OnLoaded entered");
         Initialize();
-        // Show window and overlay
+        // Show overlay (doesn't steal focus — uses WS_EX_NOACTIVATE)
         _overlay.Show();
-        Activate();
         LogInfo("OnLoaded complete successfully");
     }
 
@@ -286,6 +285,10 @@ public partial class MainWindow : Window
             ApplyComboSettingsFromProfile();
 
             ShowFirstRunWarning();
+
+            // Safety: release any modifier keys that may be stuck from a previous
+            // crash or force-kill before the poller starts injecting new keys.
+            KeyboardInjector.UnstickModifierKeys();
 
             LogInfo("Starting watchdog and poller...");
             _watchdog.Start();
