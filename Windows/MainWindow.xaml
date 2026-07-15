@@ -134,6 +134,22 @@
                                    Text="0" VerticalAlignment="Center" MinWidth="30"
                                    FontWeight="Bold" FontSize="14"/>
                     </Grid>
+                    <Grid Margin="0,4,0,2">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="Auto"/>
+                            <ColumnDefinition Width="*"/>
+                            <ColumnDefinition Width="Auto"/>
+                        </Grid.ColumnDefinitions>
+                        <TextBlock Grid.Column="0" Text="Combo activation delay:" FontWeight="Bold"
+                                   VerticalAlignment="Center" Margin="0,0,6,0"/>
+                        <Slider Grid.Column="1" x:Name="ComboActDelaySlider"
+                                Minimum="0" Maximum="500" SmallChange="10" LargeChange="50"
+                                ValueChanged="ComboActDelaySlider_ValueChanged"
+                                TickFrequency="10" TickPlacement="None" Margin="0,0,6,0"/>
+                        <TextBlock Grid.Column="2" x:Name="ComboActDelayValue"
+                                   Text="0" VerticalAlignment="Center" MinWidth="30"
+                                   FontWeight="Bold" FontSize="14"/>
+                    </Grid>
                     <CheckBox x:Name="DiagDelayHoldCheckbox"
                               Content="Hold cardinal keys during delay"
                               Margin="0,1,0,0"

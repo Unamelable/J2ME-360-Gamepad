@@ -203,6 +203,12 @@ public partial class MainWindow : Window
                 DiagDelayHoldCheckbox.IsChecked = false;
                 DiagDelayHoldCheckbox.IsEnabled = false;
             }
+
+            int comboDelay = appSettings.ComboActivationDelayMs;
+            ComboActDelaySlider.Value = comboDelay;
+            _poller.ComboActivationDelayMs = comboDelay;
+            ComboActDelayValue.Text = comboDelay == 0 ? "Off" : comboDelay.ToString();
+
             ApplyDiagonalDelayFromProfile();
 
             StartMinimizedCheckbox.IsChecked = appSettings.StartMinimized;
@@ -399,6 +405,7 @@ public partial class MainWindow : Window
         s.DiagonalDelayHold = DiagDelayHoldCheckbox.IsChecked == true;
         s.DiagonalDelayPerProfile = DiagDelayPerProfileCheckbox.IsChecked == true;
         s.DirectionalDelayMs = (int)DirDelaySlider.Value;
+        s.ComboActivationDelayMs = (int)ComboActDelaySlider.Value;
         s.StartMinimized = StartMinimizedCheckbox.IsChecked == true;
         s.TerminateIfKemulatorClosed = TerminateIfKemulatorClosedCheckbox.IsChecked == true;
         s.BackCycles = BackCyclesCheckbox.IsChecked == true;
@@ -529,6 +536,14 @@ public partial class MainWindow : Window
             DiagDelayHoldCheckbox.IsEnabled = true;
             DiagDelayHoldCheckbox.IsChecked = _savedDelayHoldState;
         }
+    }
+
+    private void ComboActDelaySlider_ValueChanged(object sender, RoutedPropertyChangedEventArgs<double> e)
+    {
+        if (_poller == null) return;
+        int val = (int)ComboActDelaySlider.Value;
+        _poller.ComboActivationDelayMs = val;
+        ComboActDelayValue.Text = val == 0 ? "Off" : val.ToString();
     }
 
     private void ApplyDiagonalDelayFromProfile()

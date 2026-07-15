@@ -14,6 +14,7 @@ public class AppSettings
     public bool TerminateWarningHidden { get; set; }
     public int DiagonalDelayMs { get; set; }
     public int DirectionalDelayMs { get; set; }
+    public int ComboActivationDelayMs { get; set; } = 100;
     public bool DiagonalDelayHold { get; set; } = true;
     public bool DiagonalDelayPerProfile { get; set; }
     public bool BackCycles { get; set; }

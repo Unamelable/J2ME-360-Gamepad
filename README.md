@@ -204,7 +204,7 @@ Maps action names to DInput button indices. Serializable as JSON.
 
 Centralized application settings stored as a single JSON file (`%APPDATA%\J2MEGamepad\app_settings.json`).
 
-**Properties**: `Version`, `StartMinimized`, `TerminateIfKemulatorClosed`, `TerminateWarningHidden`, `DiagonalDelayMs`, `DirectionalDelayMs`, `DiagonalDelayHold` (default true), `DiagonalDelayPerProfile`, `BackCycles`, `SkipDefault`, `ComboPerProfile`, `DisableComboModifierOSD`, `ComboConfirmationHold`, `LeftThumbIsComboModifier`, `RightThumbIsComboModifier`, `FirstRunCompleted`, `CustomWarningHidden`, `KeysFontSize` (18), `KeysWindowWidth` (593), `KeysWindowHeight` (682).
+**Properties**: `Version`, `StartMinimized`, `TerminateIfKemulatorClosed`, `TerminateWarningHidden`, `DiagonalDelayMs`, `DirectionalDelayMs`, `ComboActivationDelayMs` (default 100), `DiagonalDelayHold` (default true), `DiagonalDelayPerProfile`, `BackCycles`, `SkipDefault`, `ComboPerProfile`, `DisableComboModifierOSD`, `ComboConfirmationHold`, `LeftThumbIsComboModifier`, `RightThumbIsComboModifier`, `FirstRunCompleted`, `CustomWarningHidden`, `KeysFontSize` (18), `KeysWindowWidth` (593), `KeysWindowHeight` (682).
 
 **Migration**: On first load (version 0), migrates from legacy individual txt files (`diagdelay.txt`, `directional_delay.txt`, `diaghold.txt`, `diagperprofile.txt`, `comboperprofile.txt`, `disable_combo_modifier_osd.txt`, `terminate.txt`, `terminate_warning_hidden.txt`, `start_minimized.txt`, `firstrun.txt`, `custom_warning_hidden.txt`, `keysfont.txt`, `keyssize.txt`) and saves as v1 JSON.
 
@@ -369,6 +369,7 @@ Core polling engine. Runs at 8ms (125 Hz) via `System.Timers.Timer`. Alternates 
 - DirectInput8 (`dinput8.dll`) COM interop is compiled in `DirectInputReader.cs` but **never called at runtime** — on many Windows 11 systems `DirectInput8Create`/`CoCreateInstance` fail with `0x80004002` (E_NOINTERFACE). WinMM (`winmm.dll` / `joyGetPosEx`) is the only active DInput path, confirmed working from Windows XP through 11.
 - WinMM detection is cached: when no controller is detected, scans are skipped for 500ms.
 - Combo modifier system: holding `RB+LB`, `RT+LT`, `LSB` (Left Stick Button), or `RSB` (Right Stick Button) enables combo actions when the corresponding "Is a combo-modifier" checkbox is checked. Face buttons (Y/X/A/B) fire macro key sequences. Start/Back fire executable launches (RB+LB/RT+LT modifiers only). Cached button indices ensure O(1) checks.
+- **Combo activation delay** (configurable 0–500ms, default 100ms): when `RB+LB` or `RT+LT` is pressed, the system waits the delay period before activating the combo modifier. During this window, individual shoulder/trigger key presses (LB/RB/LT/RT) are suppressed. If only one button is held when the delay expires, its mapped key is sent as a normal press. If both buttons are held for the full delay, the combo modifier activates with no individual keys ever sent. Setting to 0 disables the delay (instant original behavior).
 
 **Fields** (selected)
 
@@ -377,6 +378,7 @@ Core polling engine. Runs at 8ms (125 Hz) via `System.Timers.Timer`. Alternates 
 - `_tryXInputNext` — alternates XInput/WinMM detection each tick when no controller
 - `_*WasPressed` / `_current*HeldKey` — per-button edge tracking for A/B/X/Y/LB/RB/LT/RT/Back/Start/LeftThumb/RightThumb
 - `_activeComboModifier` — combo state machine (`None`/`RbLb`/`RtLt`/`Lsb`/`Rsb`)
+- `_pendingComboModifier` / `_pendingComboStartMs` / `_comboPendingBothDetected` — pending combo activation state (two-phase: single-button wait → both-held confirmation)
 - `_comboHeldKeys` / `_comboWasPressed` — combo key tracking
 - `_dinputMapping`, `_dinputCalibration`, `_comboSettings` — DInput+combo config
 - `_dinputButtonToAction` — reverse mapping (button index → action name)
@@ -403,6 +405,7 @@ Core polling engine. Runs at 8ms (125 Hz) via `System.Timers.Timer`. Alternates 
 | `LeftThumbIsComboModifier`   | When true, Left Stick Button acts as a combo modifier (LSB+Y/X/A/B).                                |
 | `RightThumbIsComboModifier`  | When true, Right Stick Button acts as a combo modifier (RSB+Y/X/A/B).                               |
 | `ComboConfirmationHold`      | When true, combo face/exec buttons require a 1-second hold before firing. During hold the OSD shows the combo name in green; releasing early cancels the action. |
+| `ComboActivationDelayMs`     | Activation delay for RB+LB/RT+LT combo modifier (0–500ms, default 100). During the delay individual shoulder/trigger keys are suppressed. 0 = instant (original behavior). |
 
 **Events**
 
@@ -426,11 +429,11 @@ Core polling engine. Runs at 8ms (125 Hz) via `System.Timers.Timer`. Alternates 
 | `Start()`/`Stop()`/`Dispose()`                                                                  | Lifecycle: start/stop timer, release all keys.                                                                                                                                               |
 | `Poll(...)`                                                                                     | **Internal.** Called every 8ms. When no controller: alternates `PollXInputDetection()`/`PollDInputDetection()` each tick. When active: calls `PollXInputActive()` or `PollDInputActive()`.   |
 | `PollXInputActive()`/`PollXInputDetection()`                                                    | **Internal.** XInput GetState at user index 0. On success, processes state. On disconnect, falls back to None and tries DInput next tick.                                                     |
-| `ProcessXInputState(XInputState)`                                                               | **Internal.** Builds GamepadState, processes DPAD, then checks combo modifiers (RB+LB / RT+LT / LSB / RSB). If combo active, routes to `ProcessComboModifierXInput`; otherwise normal action/mode-switch path.   |
+| `ProcessXInputState(XInputState)`                                                               | **Internal.** Builds GamepadState, processes DPAD, then evaluates pending combo activation (two-phase: single shoulder/trigger button delay → both-held confirmation). Routes to combo modifier or normal action/mode-switch path.   |
 | `PollDInput()`                                                                                  | **Internal.** WinMM-only path: enumerates `joyGetPosEx` for devices 0-15. On device found: if XInput also responds, upgrades to XInput mode. Otherwise loads config and enters DInput mode.  |
 | `LoadDInputConfig()`                                                                            | **Internal.** Loads DInput mapping, calibration, and combo settings from disk. Does NOT touch DirectInput8.                                                                                  |
 | `MakeStateFromJoyInfo(JOYINFOEX)`                                                               | **Internal.** Builds `GamepadState` from WinMM state via `UpdateFromDInput`.                                                                                                                 |
-| `ProcessDInput(GamepadState, JOYINFOEX?)`                                                       | **Internal.** Applies button-mapped D-Pad overrides, calls `ProcessDPad`, handles remapping capture, then processes combo or normal actions.                                                 |
+| `ProcessDInput(GamepadState, JOYINFOEX?)`                                                       | **Internal.** Applies button-mapped D-Pad overrides, calls `ProcessDPad`, handles remapping capture, then evaluates pending combo activation (same two-phase logic as XInput). Routes to combo or normal actions.                                                 |
 | `ProcessDInputCombo(uint buttons, string prefix)`                                               | **Internal.** DInput combo modifier logic for all modifier types: caches modifier type, releases shoulder/thumb keys, routes face buttons to `ProcessComboButton`. Only RB+LB/RT+LT support Start/Back exec combos. |
 | `ProcessDInputActions(uint buttons)`                                                            | **Internal.** Iterates `_dinputButtonToAction` (skipping system + DPad actions), tracks edge transitions, sends key down/up via `KeyboardInjector`.                                           |
 | `ProcessDInputModeSwitches(uint buttons)`                                                       | **Internal.** Edge-detection for Back/Start/LeftThumb for mode/profile cycling.                                                                                                              |

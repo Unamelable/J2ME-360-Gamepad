@@ -49,6 +49,13 @@ public class GamepadPoller : IDisposable
     private bool _confirmTriggerQueued;
     private const long ComboConfirmationDelayMs = 1000;
 
+    // Combo activation delay: 0 = disabled (instant), >0 = ms to hold before activating
+    public int ComboActivationDelayMs { get; set; } = 100;
+
+    // Pending combo evaluation state
+    private ComboModifier _pendingComboModifier = ComboModifier.None;
+    private long _pendingComboStartMs;
+    private bool _comboPendingBothDetected;
 
     private ushort _currentAHeldKey;
     private ushort _currentBHeldKey;
@@ -359,6 +366,167 @@ public class GamepadPoller : IDisposable
             bool lsbModNow = LeftThumbIsComboModifier && current.LeftThumb;
             bool rsbModNow = RightThumbIsComboModifier && current.RightThumb;
 
+            // ── Pending combo evaluation (applies to any LB/RB/LT/RT press) ──
+            if (_pendingComboModifier != ComboModifier.None)
+            {
+                long elapsed = _stopwatch.ElapsedMilliseconds - _pendingComboStartMs;
+                bool bothHeld = _pendingComboModifier switch
+                {
+                    ComboModifier.RbLb => rbLbNow,
+                    ComboModifier.RtLt => rtLtNow,
+                    _ => false
+                };
+                bool oneHeld = _pendingComboModifier switch
+                {
+                    ComboModifier.RbLb => current.LB || current.RB,
+                    ComboModifier.RtLt => current.LT || current.RT,
+                    _ => false
+                };
+
+                if (_comboPendingBothDetected)
+                {
+                    // Phase 2: Both buttons detected, waiting for hold duration
+                    if (!bothHeld)
+                    {
+                        _pendingComboModifier = ComboModifier.None;
+                        _comboPendingBothDetected = false;
+                    }
+                    else if (elapsed >= ComboActivationDelayMs)
+                    {
+                        ComboModifier activated = _pendingComboModifier;
+                        _pendingComboModifier = ComboModifier.None;
+                        _comboPendingBothDetected = false;
+                        string prefix = activated == ComboModifier.RbLb ? "RB+LB+" : "RT+LT+";
+                        ProcessComboModifierXInput(current, prefix, isDefault);
+                        ProcessButtonEdge(current.Back, ref _backWasPressed, () => { });
+                        ProcessButtonEdge(current.Start, ref _startWasPressed, () => { });
+                        ProcessButtonEdge(current.LeftThumb, ref _leftThumbModeWasPressed, () => { });
+                        return;
+                    }
+                    else
+                    {
+                        ProcessButtonEdge(current.Back, ref _backWasPressed, () => { });
+                        ProcessButtonEdge(current.Start, ref _startWasPressed, () => { });
+                        ProcessButtonEdge(current.LeftThumb, ref _leftThumbModeWasPressed, () => { });
+                        return;
+                    }
+                }
+                else
+                {
+                    // Phase 1: Single button detected, waiting for complement or timeout
+                    if (!oneHeld)
+                    {
+                        _pendingComboModifier = ComboModifier.None;
+                    }
+                    else if (bothHeld)
+                    {
+                        _comboPendingBothDetected = true;
+                        if (elapsed >= ComboActivationDelayMs)
+                        {
+                            ComboModifier activated = _pendingComboModifier;
+                            _pendingComboModifier = ComboModifier.None;
+                            _comboPendingBothDetected = false;
+                            string prefix = activated == ComboModifier.RbLb ? "RB+LB+" : "RT+LT+";
+                            ProcessComboModifierXInput(current, prefix, isDefault);
+                            ProcessButtonEdge(current.Back, ref _backWasPressed, () => { });
+                            ProcessButtonEdge(current.Start, ref _startWasPressed, () => { });
+                            ProcessButtonEdge(current.LeftThumb, ref _leftThumbModeWasPressed, () => { });
+                            return;
+                        }
+                        ProcessButtonEdge(current.Back, ref _backWasPressed, () => { });
+                        ProcessButtonEdge(current.Start, ref _startWasPressed, () => { });
+                        ProcessButtonEdge(current.LeftThumb, ref _leftThumbModeWasPressed, () => { });
+                        return;
+                    }
+                    else if (elapsed >= ComboActivationDelayMs)
+                    {
+                        // Timeout — send individual key for the held button
+                        ComboModifier pending = _pendingComboModifier;
+                        _pendingComboModifier = ComboModifier.None;
+                        _comboPendingBothDetected = false;
+
+                        if (pending == ComboModifier.RbLb)
+                        {
+                            if (current.LB)
+                            {
+                                ushort key = isDefault ? VK.Multiply : _profiles.CurrentProfile.GetValueOrDefault("LB", VK.Multiply);
+                                _keyboard.PressKey(key);
+                                _lbWasPressed = true;
+                                _currentLBHeldKey = key;
+                            }
+                            if (current.RB)
+                            {
+                                ushort key = isDefault ? VK.Divide : _profiles.CurrentProfile.GetValueOrDefault("RB", VK.Divide);
+                                _keyboard.PressKey(key);
+                                _rbWasPressed = true;
+                                _currentRBHeldKey = key;
+                            }
+                        }
+                        else
+                        {
+                            if (current.LT)
+                            {
+                                ushort key = isDefault ? VK.F1 : _profiles.CurrentProfile.GetValueOrDefault("LT", VK.F1);
+                                _keyboard.PressKey(key);
+                                _ltWasPressed = true;
+                                _currentLTHeldKey = key;
+                            }
+                            if (current.RT)
+                            {
+                                ushort key = isDefault ? VK.F2 : _profiles.CurrentProfile.GetValueOrDefault("RT", VK.F2);
+                                _keyboard.PressKey(key);
+                                _rtWasPressed = true;
+                                _currentRTHeldKey = key;
+                            }
+                        }
+                        // Fall through to normal processing below
+                    }
+                    else
+                    {
+                        ProcessButtonEdge(current.Back, ref _backWasPressed, () => { });
+                        ProcessButtonEdge(current.Start, ref _startWasPressed, () => { });
+                        ProcessButtonEdge(current.LeftThumb, ref _leftThumbModeWasPressed, () => { });
+                        return;
+                    }
+                }
+            }
+
+            // ── Start new pending evaluation ─────────────────────────
+            if (_pendingComboModifier == ComboModifier.None && !lsbModNow && !rsbModNow)
+            {
+                if (rbLbNow || rtLtNow)
+                {
+                    _pendingComboModifier = rbLbNow ? ComboModifier.RbLb : ComboModifier.RtLt;
+                    _pendingComboStartMs = _stopwatch.ElapsedMilliseconds;
+                    _comboPendingBothDetected = true;
+                    ProcessButtonEdge(current.Back, ref _backWasPressed, () => { });
+                    ProcessButtonEdge(current.Start, ref _startWasPressed, () => { });
+                    ProcessButtonEdge(current.LeftThumb, ref _leftThumbModeWasPressed, () => { });
+                    return;
+                }
+                if (current.LB || current.RB)
+                {
+                    _pendingComboModifier = ComboModifier.RbLb;
+                    _pendingComboStartMs = _stopwatch.ElapsedMilliseconds;
+                    _comboPendingBothDetected = false;
+                    ProcessButtonEdge(current.Back, ref _backWasPressed, () => { });
+                    ProcessButtonEdge(current.Start, ref _startWasPressed, () => { });
+                    ProcessButtonEdge(current.LeftThumb, ref _leftThumbModeWasPressed, () => { });
+                    return;
+                }
+                if (current.LT || current.RT)
+                {
+                    _pendingComboModifier = ComboModifier.RtLt;
+                    _pendingComboStartMs = _stopwatch.ElapsedMilliseconds;
+                    _comboPendingBothDetected = false;
+                    ProcessButtonEdge(current.Back, ref _backWasPressed, () => { });
+                    ProcessButtonEdge(current.Start, ref _startWasPressed, () => { });
+                    ProcessButtonEdge(current.LeftThumb, ref _leftThumbModeWasPressed, () => { });
+                    return;
+                }
+            }
+
+            // ── Existing combo / normal processing ───────────────────
             if (rbLbNow || rtLtNow || lsbModNow || rsbModNow)
             {
                 string prefix;
@@ -549,6 +717,185 @@ public class GamepadPoller : IDisposable
         bool lsbModNow = LeftThumbIsComboModifier && hasLsb;
         bool rsbModNow = RightThumbIsComboModifier && hasRsb;
 
+        // ── Pending combo evaluation (applies to any LB/RB/LT/RT press) ──
+        if (_pendingComboModifier != ComboModifier.None)
+        {
+            long elapsed = _stopwatch.ElapsedMilliseconds - _pendingComboStartMs;
+            bool bothHeld = _pendingComboModifier switch
+            {
+                ComboModifier.RbLb => rbLbNow,
+                ComboModifier.RtLt => rtLtNow,
+                _ => false
+            };
+            bool oneHeld = _pendingComboModifier switch
+            {
+                ComboModifier.RbLb => hasLb || hasRb,
+                ComboModifier.RtLt => hasLt || hasRt,
+                _ => false
+            };
+
+            if (_comboPendingBothDetected)
+            {
+                if (!bothHeld)
+                {
+                    _pendingComboModifier = ComboModifier.None;
+                    _comboPendingBothDetected = false;
+                }
+                else if (elapsed >= ComboActivationDelayMs)
+                {
+                    ComboModifier activated = _pendingComboModifier;
+                    _pendingComboModifier = ComboModifier.None;
+                    _comboPendingBothDetected = false;
+                    string prefix = activated == ComboModifier.RbLb ? "RB+LB+" : "RT+LT+";
+                    ProcessDInputCombo(buttons, prefix);
+                    bool backPressed = ((buttons >> _dinputBackIdx) & 1) != 0;
+                    bool startPressed = ((buttons >> _dinputStartIdx) & 1) != 0;
+                    bool leftThumbPressed = ((buttons >> _dinputLeftThumbIdx) & 1) != 0;
+                    ProcessButtonEdge(backPressed, ref _backWasPressed, () => { });
+                    ProcessButtonEdge(startPressed, ref _startWasPressed, () => { });
+                    ProcessButtonEdge(leftThumbPressed, ref _leftThumbModeWasPressed, () => { });
+                    return;
+                }
+                else
+                {
+                    bool backPressed = ((buttons >> _dinputBackIdx) & 1) != 0;
+                    bool startPressed = ((buttons >> _dinputStartIdx) & 1) != 0;
+                    bool leftThumbPressed = ((buttons >> _dinputLeftThumbIdx) & 1) != 0;
+                    ProcessButtonEdge(backPressed, ref _backWasPressed, () => { });
+                    ProcessButtonEdge(startPressed, ref _startWasPressed, () => { });
+                    ProcessButtonEdge(leftThumbPressed, ref _leftThumbModeWasPressed, () => { });
+                    return;
+                }
+            }
+            else
+            {
+                if (!oneHeld)
+                {
+                    _pendingComboModifier = ComboModifier.None;
+                }
+                else if (bothHeld)
+                {
+                    _comboPendingBothDetected = true;
+                    if (elapsed >= ComboActivationDelayMs)
+                    {
+                        ComboModifier activated = _pendingComboModifier;
+                        _pendingComboModifier = ComboModifier.None;
+                        _comboPendingBothDetected = false;
+                        string prefix = activated == ComboModifier.RbLb ? "RB+LB+" : "RT+LT+";
+                        ProcessDInputCombo(buttons, prefix);
+                        ProcessButtonEdge(((buttons >> _dinputBackIdx) & 1) != 0, ref _backWasPressed, () => { });
+                        ProcessButtonEdge(((buttons >> _dinputStartIdx) & 1) != 0, ref _startWasPressed, () => { });
+                        ProcessButtonEdge(((buttons >> _dinputLeftThumbIdx) & 1) != 0, ref _leftThumbModeWasPressed, () => { });
+                        return;
+                    }
+                    bool backPressed = ((buttons >> _dinputBackIdx) & 1) != 0;
+                    bool startPressed = ((buttons >> _dinputStartIdx) & 1) != 0;
+                    bool leftThumbPressed = ((buttons >> _dinputLeftThumbIdx) & 1) != 0;
+                    ProcessButtonEdge(backPressed, ref _backWasPressed, () => { });
+                    ProcessButtonEdge(startPressed, ref _startWasPressed, () => { });
+                    ProcessButtonEdge(leftThumbPressed, ref _leftThumbModeWasPressed, () => { });
+                    return;
+                }
+                else if (elapsed >= ComboActivationDelayMs)
+                {
+                    ComboModifier pending = _pendingComboModifier;
+                    _pendingComboModifier = ComboModifier.None;
+                    _comboPendingBothDetected = false;
+
+                    if (pending == ComboModifier.RbLb)
+                    {
+                        if (hasLb)
+                        {
+                            ushort key = GetVKForDInputAction("LB");
+                            _keyboard.PressKey(key);
+                            _dinputWasPressed[_dinputLBIdx] = true;
+                            _dinputHeldKeys["LB"] = key;
+                        }
+                        if (hasRb)
+                        {
+                            ushort key = GetVKForDInputAction("RB");
+                            _keyboard.PressKey(key);
+                            _dinputWasPressed[_dinputRBIdx] = true;
+                            _dinputHeldKeys["RB"] = key;
+                        }
+                    }
+                    else
+                    {
+                        if (hasLt)
+                        {
+                            ushort key = GetVKForDInputAction("LT");
+                            _keyboard.PressKey(key);
+                            _dinputWasPressed[_dinputLTIdx] = true;
+                            _dinputHeldKeys["LT"] = key;
+                        }
+                        if (hasRt)
+                        {
+                            ushort key = GetVKForDInputAction("RT");
+                            _keyboard.PressKey(key);
+                            _dinputWasPressed[_dinputRTIdx] = true;
+                            _dinputHeldKeys["RT"] = key;
+                        }
+                    }
+                    // Fall through to normal processing below
+                }
+                else
+                {
+                    bool backPressed = ((buttons >> _dinputBackIdx) & 1) != 0;
+                    bool startPressed = ((buttons >> _dinputStartIdx) & 1) != 0;
+                    bool leftThumbPressed = ((buttons >> _dinputLeftThumbIdx) & 1) != 0;
+                    ProcessButtonEdge(backPressed, ref _backWasPressed, () => { });
+                    ProcessButtonEdge(startPressed, ref _startWasPressed, () => { });
+                    ProcessButtonEdge(leftThumbPressed, ref _leftThumbModeWasPressed, () => { });
+                    return;
+                }
+            }
+        }
+
+        // ── Start new pending evaluation ─────────────────────────
+        if (_pendingComboModifier == ComboModifier.None && !lsbModNow && !rsbModNow)
+        {
+            if (rbLbNow || rtLtNow)
+            {
+                _pendingComboModifier = rbLbNow ? ComboModifier.RbLb : ComboModifier.RtLt;
+                _pendingComboStartMs = _stopwatch.ElapsedMilliseconds;
+                _comboPendingBothDetected = true;
+                bool backPressed = ((buttons >> _dinputBackIdx) & 1) != 0;
+                bool startPressed = ((buttons >> _dinputStartIdx) & 1) != 0;
+                bool leftThumbPressed = ((buttons >> _dinputLeftThumbIdx) & 1) != 0;
+                ProcessButtonEdge(backPressed, ref _backWasPressed, () => { });
+                ProcessButtonEdge(startPressed, ref _startWasPressed, () => { });
+                ProcessButtonEdge(leftThumbPressed, ref _leftThumbModeWasPressed, () => { });
+                return;
+            }
+            if (hasLb || hasRb)
+            {
+                _pendingComboModifier = ComboModifier.RbLb;
+                _pendingComboStartMs = _stopwatch.ElapsedMilliseconds;
+                _comboPendingBothDetected = false;
+                bool backPressed = ((buttons >> _dinputBackIdx) & 1) != 0;
+                bool startPressed = ((buttons >> _dinputStartIdx) & 1) != 0;
+                bool leftThumbPressed = ((buttons >> _dinputLeftThumbIdx) & 1) != 0;
+                ProcessButtonEdge(backPressed, ref _backWasPressed, () => { });
+                ProcessButtonEdge(startPressed, ref _startWasPressed, () => { });
+                ProcessButtonEdge(leftThumbPressed, ref _leftThumbModeWasPressed, () => { });
+                return;
+            }
+            if (hasLt || hasRt)
+            {
+                _pendingComboModifier = ComboModifier.RtLt;
+                _pendingComboStartMs = _stopwatch.ElapsedMilliseconds;
+                _comboPendingBothDetected = false;
+                bool backPressed = ((buttons >> _dinputBackIdx) & 1) != 0;
+                bool startPressed = ((buttons >> _dinputStartIdx) & 1) != 0;
+                bool leftThumbPressed = ((buttons >> _dinputLeftThumbIdx) & 1) != 0;
+                ProcessButtonEdge(backPressed, ref _backWasPressed, () => { });
+                ProcessButtonEdge(startPressed, ref _startWasPressed, () => { });
+                ProcessButtonEdge(leftThumbPressed, ref _leftThumbModeWasPressed, () => { });
+                return;
+            }
+        }
+
+        // ── Existing combo / normal processing ───────────────────
         if (rbLbNow || rtLtNow || lsbModNow || rsbModNow)
         {
             string prefix;
@@ -1411,6 +1758,8 @@ public class GamepadPoller : IDisposable
 
     private void EndComboModifier()
     {
+        _pendingComboModifier = ComboModifier.None;
+        _comboPendingBothDetected = false;
         if (_activeComboModifier == ComboModifier.None)
             return;
         CancelComboConfirmation();
