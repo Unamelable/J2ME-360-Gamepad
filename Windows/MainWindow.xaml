@@ -5,6 +5,7 @@
         Height="670"
         Width="690"
         Topmost="False"
+        ShowActivated="False"
         Icon="pack://application:,,,/icon.ico">
     <Window.Resources>
         <Style TargetType="Border" x:Key="SectionBorder">

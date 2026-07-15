@@ -27,14 +27,21 @@ public partial class OverlayWindow : Window
     public OverlayWindow()
     {
         InitializeComponent();
-        this.Loaded += OnLoaded;
+        // Apply WS_EX_NOACTIVATE before the window is shown (SourceInitialized fires
+        // when the HWND is created, before Show() returns), not in Loaded which fires
+        // after Show() has already activated the window.
+        SourceInitialized += (_, _) =>
+        {
+            var hwnd = new WindowInteropHelper(this).Handle;
+            var exStyle = GetWindowLong(hwnd, GWL_EXSTYLE);
+            SetWindowLong(hwnd, GWL_EXSTYLE, exStyle | WS_EX_NOACTIVATE | WS_EX_TRANSPARENT);
+        };
+        Loaded += OnLoaded;
     }
 
     private void OnLoaded(object sender, RoutedEventArgs e)
     {
-        var hwnd = new WindowInteropHelper(this).Handle;
-        var exStyle = GetWindowLong(hwnd, GWL_EXSTYLE);
-        SetWindowLong(hwnd, GWL_EXSTYLE, exStyle | WS_EX_NOACTIVATE | WS_EX_TRANSPARENT);
+        ClearAnimations();
     }
 
     private void ClearAnimations()

@@ -947,20 +947,73 @@ The project targets `net40-windows` (NET Framework 4.0) with WPF and WinForms su
 
 ## Changelog
 
-### 2026-07-15 — Combo modifier key sticking fixes
+### 2026-07-15 — Combo reliability, process lifecycle, and focus management
 
-Two bugs were fixed where modifier keys (Ctrl/Shift/Alt) used in combo key sequences could remain pressed after the combo face button was released, requiring a physical key press to "unstick" them.
+#### Process lifecycle & key cleanup
+
+**Bug 3 — KEmulator force-kill prevented cleanup**
+
+`killJ2MEGamepad()` used `taskkill /F`, terminating the process immediately without running any cleanup. All keys tracked in `KeyboardInjector._keysDown` (including combo modifier keys) remained physically pressed with no matching key-up.
+
+*Fix in `Emulator.java::killJ2MEGamepad()`*: Fires `taskkill /IM` (WM_CLOSE) then immediately `/F` — zero-wait fire-and-forget. If the gamepad processes WM_CLOSE fast enough it cleans up; otherwise the startup safety net (Bug 5) releases leftovers.
+
+**Bug 4 — UnhandledException handler skipped `PerformShutdown()`**
+
+The `AppDomain.CurrentDomain.UnhandledException` handler only logged — it never called `PerformShutdown()`. Any unexpected crash left all injected keys stuck.
+
+*Fix in `App.xaml.cs`*: Handler now calls `PerformShutdown()` → `GlobalKeyboard.Dispose()` → `ReleaseAll()` → key-up events for every tracked key.
+
+**Bug 5 — No startup safety net for leftover stuck keys**
+
+After force-kill or crash, leftover stuck modifier keys could persist across sessions. Next launch would inject keys on top of already-pressed modifiers.
+
+*Fix in `KeyboardInjector.cs`*: Added `UnstickModifierKeys()` — sends key-up for all common modifier key codes (left/right/generic Ctrl, Shift, Alt). Called once in `MainWindow.Initialize()` before the poller starts.
+
+**Bug 7 — J2MEGamepad not re-launched after KEmulator restart**
+
+Restart spawned the new KEmulator *before* killing the old gamepad. The new instance's `isJ2MEGamepadRunning()` returned `true` (old gamepad still alive) and skipped launching a fresh one. The old gamepad was killed on the next line, leaving the new KEmulator with no gamepad.
+
+*Fix in `Emulator.java` (restart method)*: Moved `killJ2MEGamepad()` to run *before* `newKem.start()`, so the gamepad is dead by the time the new instance checks for it.
+
+#### Focus management
+
+**Bug 6 — J2MEGamepad window steals focus from KEmulator on startup**
+
+On auto-launch (or manual launch), J2MEGamepad stole keyboard focus from KEmulator. `SendInput` injects keystrokes into whatever window has focus, so all combo key sequences landed on J2MEGamepad itself instead of the MIDlet. The OSD showed correctly but the injected keys went nowhere.
+
+Three causes:
+- **Bug 6a** — `MainWindow.OnLoaded` called `Activate()`, forcing the window to the foreground.
+- **Bug 6b** — MainWindow lacked `ShowActivated="False"` in XAML, so WPF's `Show()` activated the window by default.
+- **Bug 6c** — `OverlayWindow` applied `WS_EX_NOACTIVATE` in the `Loaded` event, which fires *after* `Show()` returns — the overlay was briefly visible without the no-activate style.
+
+*Fixes*: Removed `Activate()` from `OnLoaded` (`MainWindow.xaml.cs`). Added `ShowActivated="False"` (`MainWindow.xaml`). Moved `WS_EX_NOACTIVATE | WS_EX_TRANSPARENT` from `Loaded` to `SourceInitialized` so styles exist before the window is shown (`OverlayWindow.xaml.cs`).
+
+#### Combo button edge detection
 
 **Bug 1 — DInput combo face button release skipped `EndComboKeys()`**
 
-When using a DirectInput controller in combo modifier mode (e.g. RB+LB held), releasing a face button (Y/X/A/B) directly cleared `_comboWasPressed` without calling `EndComboKeys()`. The combo key sequence remained physically pressed until the modifier combo was also released.
+In DInput combo mode (e.g. RB+LB held), releasing a face button (Y/X/A/B) cleared `_comboWasPressed` without calling `EndComboKeys()`. The combo key sequence remained physically pressed until the modifier combo was also released.
 
-*Fix in `ProcessDInputCombo`*: Now passes the actual button state to `ProcessComboButton(prefix + btn, pressed, isDefault)` for both press and release, matching the existing XInput behavior. On release, `ProcessComboButton` properly calls `EndComboKeys()` which sends key-up events for all combo-held keys via `SendInput`.
+*Fix in `ProcessDInputCombo`*: Now passes actual button state to `ProcessComboButton(prefix + btn, pressed, isDefault)` for both press and release, matching existing XInput behavior.
 
 **Bug 2 — Confirmation combo-hold release path skipped `EndComboKeys()`**
 
-When "Confirmation combo-hold" was enabled and the combo fired after the 1s hold, releasing the face button entered the confirmation-cancellation branch which returned without calling `EndComboKeys()`. The combo key sequence (including any modifier keys) remained down until the modifier combo itself was released.
+With confirmation hold enabled, after the combo fired on the 1s hold, releasing the face button entered the cancellation branch which returned without `EndComboKeys()`. Combo keys remained down until the modifier itself was released.
 
-*Fix in `ProcessComboButton`*: Before clearing confirmation state on button release, the code now checks `_confirmTriggerQueued` and calls `EndComboKeys()` if the combo had already fired, ensuring keys are released immediately.
+*Fix in `ProcessComboButton`*: Before clearing confirmation state on release, checks `_confirmTriggerQueued` and calls `EndComboKeys()` if the combo had already fired.
 
-**Safety note**: `KeyboardInjector.ReleaseAll()` (called on disconnect, poller stop, and process shutdown) remains the ultimate safety net — it sends key-up events for every key tracked in `_keysDown` under a lock. Both builds (Debug + Release) compile with zero warnings.
+**Bug 8 — Face button combo unresponsive on rapid re-press or simultaneous modifier+face press**
+
+Two distinct root causes, both preventing face button combos from firing when the user expected them.
+
+*Root cause A — Missed release+re-press within a single poll tick*
+
+The edge detector (`_comboWasPressed[comboName]`) polls at 8ms. If the user released and re-pressed a face button within one 8ms tick, both edges were invisible — `_comboWasPressed` stayed `true`, so the rising-edge check `pressed && !wasPressed` was never satisfied.
+
+*Fix in `ProcessComboModifierXInput`*: Before the face button loop, compares current vs previous raw `XInputGamepad` state (not the derived `GamepadState` booleans). If `dwPacketNumber` jumped by >1 AND no other control (other buttons, triggers, thumbsticks) differs, the face button must have been released and re-pressed — `_comboWasPressed[comboName]` is cleared to `false`, allowing re-trigger.
+
+*Root cause B — Face button press dropped during modifier activation delay*
+
+The `ComboActivationDelayMs` (default 100ms) prevents accidental combo activation from individual shoulder button presses. However, the pending-combo evaluation had three early-return paths that skipped ALL face button processing during the delay. If the user pressed modifier + face button simultaneously (or the face button within the 100ms window), the press was silently dropped.
+
+*Fix in `GamepadPoller.cs`*: Added `ProcessPendingComboFaceButtons()` helper that processes Y/X/A/B through `ProcessComboButton` using the pending modifier's prefix. Called in all three early-return paths (Phase 2 waiting, Phase 1→2 transition, initial both-detected setup) so face buttons work immediately even before the activation delay elapses.

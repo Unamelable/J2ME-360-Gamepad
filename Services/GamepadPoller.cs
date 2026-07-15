@@ -74,6 +74,13 @@ public class GamepadPoller : IDisposable
     private IntPtr _directInputWindowHandle;
     private bool _tryXInputNext = true;
 
+    // XInput raw state for missed-edge detection
+    private uint _lastPacketNumber;
+    private XInputGamepad _lastXInputGamepad;
+    private uint _prevPacketNumber;
+    private XInputGamepad _prevXInputGamepad;
+    private bool _hasPrevXInputState;
+
     private DPadMode _currentDPadMode = DPadMode.Pad;
     private bool _backCyclesYxab;
     private bool _skipDefault;
@@ -354,6 +361,13 @@ public class GamepadPoller : IDisposable
 
     private void ProcessXInputState(XInputState state)
     {
+        // Save previous raw state for missed release+re-press detection
+        _prevPacketNumber = _lastPacketNumber;
+        _prevXInputGamepad = _lastXInputGamepad;
+        _lastPacketNumber = state.dwPacketNumber;
+        _lastXInputGamepad = state.Gamepad;
+        _hasPrevXInputState = true;
+
         var current = new GamepadState();
         current.UpdateFromButtons(state.Gamepad.wButtons);
         current.UpdateTriggers(state.Gamepad.bLeftTrigger, state.Gamepad.bRightTrigger);
@@ -408,6 +422,7 @@ public class GamepadPoller : IDisposable
                         ProcessButtonEdge(current.Back, ref _backWasPressed, () => { });
                         ProcessButtonEdge(current.Start, ref _startWasPressed, () => { });
                         ProcessButtonEdge(current.LeftThumb, ref _leftThumbModeWasPressed, () => { });
+                        ProcessPendingComboFaceButtons(current, isDefault);
                         return;
                     }
                 }
@@ -436,6 +451,7 @@ public class GamepadPoller : IDisposable
                         ProcessButtonEdge(current.Back, ref _backWasPressed, () => { });
                         ProcessButtonEdge(current.Start, ref _startWasPressed, () => { });
                         ProcessButtonEdge(current.LeftThumb, ref _leftThumbModeWasPressed, () => { });
+                        ProcessPendingComboFaceButtons(current, isDefault);
                         return;
                     }
                     else if (elapsed >= ComboActivationDelayMs)
@@ -502,6 +518,7 @@ public class GamepadPoller : IDisposable
                     ProcessButtonEdge(current.Back, ref _backWasPressed, () => { });
                     ProcessButtonEdge(current.Start, ref _startWasPressed, () => { });
                     ProcessButtonEdge(current.LeftThumb, ref _leftThumbModeWasPressed, () => { });
+                    ProcessPendingComboFaceButtons(current, isDefault);
                     return;
                 }
                 if (current.LB || current.RB)
@@ -1550,6 +1567,27 @@ public class GamepadPoller : IDisposable
         return comboName;
     }
 
+    private void ProcessPendingComboFaceButtons(GamepadState current, bool isDefault)
+    {
+        string? prefix = _pendingComboModifier switch
+        {
+            ComboModifier.RbLb => "RB+LB+",
+            ComboModifier.RtLt => "RT+LT+",
+            _ => null
+        };
+        if (prefix == null) return;
+        foreach (string btn in ComboFaceButtons)
+        {
+            bool pressed = btn switch
+            {
+                "Y" => current.Y, "X" => current.X,
+                "A" => current.A, "B" => current.B,
+                _ => false
+            };
+            ProcessComboButton(prefix + btn, pressed, isDefault);
+        }
+    }
+
     private void ProcessComboButton(string comboName, bool pressed, bool isDefault)
     {
         _comboWasPressed.TryGetValue(comboName, out bool wasPressed);
@@ -1654,6 +1692,62 @@ public class GamepadPoller : IDisposable
                 if (_rightThumbWasPressed) { _keyboard.ReleaseKey(_currentRightThumbHeldKey); _rightThumbWasPressed = false; _currentRightThumbHeldKey = 0; }
             }
             ComboModifierActive?.Invoke(prefix.TrimEnd('+'));
+        }
+
+        // Missed release+re-press detection: if dwPacketNumber shows
+        // intermediate changes but no other control differs, the face
+        // button was released and re-pressed within a single poll interval.
+        if (_hasPrevXInputState && _lastPacketNumber > _prevPacketNumber + 1)
+        {
+            ushort prevBut = _prevXInputGamepad.wButtons;
+            ushort curBut = _lastXInputGamepad.wButtons;
+            byte prevLT = _prevXInputGamepad.bLeftTrigger;
+            byte curLT = _lastXInputGamepad.bLeftTrigger;
+            byte prevRT = _prevXInputGamepad.bRightTrigger;
+            byte curRT = _lastXInputGamepad.bRightTrigger;
+            short prevLX = _prevXInputGamepad.sThumbLX;
+            short curLX = _lastXInputGamepad.sThumbLX;
+            short prevLY = _prevXInputGamepad.sThumbLY;
+            short curLY = _lastXInputGamepad.sThumbLY;
+            short prevRX = _prevXInputGamepad.sThumbRX;
+            short curRX = _lastXInputGamepad.sThumbRX;
+            short prevRY = _prevXInputGamepad.sThumbRY;
+            short curRY = _lastXInputGamepad.sThumbRY;
+
+            foreach (string btn in ComboFaceButtons)
+            {
+                bool pressed = btn switch
+                {
+                    "Y" => current.Y, "X" => current.X,
+                    "A" => current.A, "B" => current.B,
+                    _ => false
+                };
+                string comboName = prefix + btn;
+                if (!pressed) continue;
+                if (!_comboWasPressed.TryGetValue(comboName, out bool wasPressed) || !wasPressed) continue;
+
+                ushort btnFlag = btn switch
+                {
+                    "A" => XInputButtons.XINPUT_GAMEPAD_A,
+                    "B" => XInputButtons.XINPUT_GAMEPAD_B,
+                    "X" => XInputButtons.XINPUT_GAMEPAD_X,
+                    "Y" => XInputButtons.XINPUT_GAMEPAD_Y,
+                    _ => 0
+                };
+                ushort otherMask = (ushort)~btnFlag;
+
+                bool otherChanged =
+                    (curBut & otherMask) != (prevBut & otherMask) ||
+                    Math.Abs(curLT - prevLT) > 1 ||
+                    Math.Abs(curRT - prevRT) > 1 ||
+                    Math.Abs(curLX - prevLX) > 500 ||
+                    Math.Abs(curLY - prevLY) > 500 ||
+                    Math.Abs(curRX - prevRX) > 500 ||
+                    Math.Abs(curRY - prevRY) > 500;
+
+                if (!otherChanged)
+                    _comboWasPressed[comboName] = false;
+            }
         }
 
         foreach (string btn in ComboFaceButtons)
