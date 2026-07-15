@@ -609,12 +609,13 @@ public class GamepadPoller : IDisposable
         foreach (string btn in ComboFaceButtons)
         {
             int btnIdx;
-            if (!actionToButton.TryGetValue(btn, out btnIdx) || ((buttons >> btnIdx) & 1) == 0)
+            if (!actionToButton.TryGetValue(btn, out btnIdx))
             {
                 _comboWasPressed[prefix + btn] = false;
                 continue;
             }
-            ProcessComboButton(prefix + btn, true, isDefault);
+            bool pressed = ((buttons >> btnIdx) & 1) != 0;
+            ProcessComboButton(prefix + btn, pressed, isDefault);
         }
 
         // Only RB+LB and RT+LT support Start/Back exec combos
@@ -623,12 +624,13 @@ public class GamepadPoller : IDisposable
             foreach (string btn in ComboExecButtons)
             {
                 int btnIdx;
-                if (!actionToButton.TryGetValue(btn, out btnIdx) || ((buttons >> btnIdx) & 1) == 0)
+                if (!actionToButton.TryGetValue(btn, out btnIdx))
                 {
                     _comboWasPressed[prefix + btn] = false;
                     continue;
                 }
-                ProcessComboButton(prefix + btn, true, isDefault);
+                bool pressed = ((buttons >> btnIdx) & 1) != 0;
+                ProcessComboButton(prefix + btn, pressed, isDefault);
             }
         }
     }
@@ -1221,6 +1223,8 @@ public class GamepadPoller : IDisposable
                 }
                 else
                 {
+                    if (_confirmTriggerQueued)
+                        EndComboKeys();
                     _confirmActive = false;
                     _confirmComboName = "";
                     _confirmOsdName = "";
