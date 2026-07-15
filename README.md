@@ -939,3 +939,25 @@ The project targets `net40-windows` (NET Framework 4.0) with WPF and WinForms su
 - SDK: .NET Framework 4.0 SDK or Visual Studio with MSBuild
 - Native: `xinput1_3.dll` (Windows XP-compatible XInput), `user32.dll`, `winmm.dll`, `dinput8.dll` (unused at runtime)
 - NuGet: `Newtonsoft.Json 12.0.3` — JSON serialization; `Microsoft.NETFramework.ReferenceAssemblies 1.0.3` — build-time reference assemblies
+
+---
+
+## Changelog
+
+### 2026-07-15 — Combo modifier key sticking fixes
+
+Two bugs were fixed where modifier keys (Ctrl/Shift/Alt) used in combo key sequences could remain pressed after the combo face button was released, requiring a physical key press to "unstick" them.
+
+**Bug 1 — DInput combo face button release skipped `EndComboKeys()`**
+
+When using a DirectInput controller in combo modifier mode (e.g. RB+LB held), releasing a face button (Y/X/A/B) directly cleared `_comboWasPressed` without calling `EndComboKeys()`. The combo key sequence remained physically pressed until the modifier combo was also released.
+
+*Fix in `ProcessDInputCombo`*: Now passes the actual button state to `ProcessComboButton(prefix + btn, pressed, isDefault)` for both press and release, matching the existing XInput behavior. On release, `ProcessComboButton` properly calls `EndComboKeys()` which sends key-up events for all combo-held keys via `SendInput`.
+
+**Bug 2 — Confirmation combo-hold release path skipped `EndComboKeys()`**
+
+When "Confirmation combo-hold" was enabled and the combo fired after the 1s hold, releasing the face button entered the confirmation-cancellation branch which returned without calling `EndComboKeys()`. The combo key sequence (including any modifier keys) remained down until the modifier combo itself was released.
+
+*Fix in `ProcessComboButton`*: Before clearing confirmation state on button release, the code now checks `_confirmTriggerQueued` and calls `EndComboKeys()` if the combo had already fired, ensuring keys are released immediately.
+
+**Safety note**: `KeyboardInjector.ReleaseAll()` (called on disconnect, poller stop, and process shutdown) remains the ultimate safety net — it sends key-up events for every key tracked in `_keysDown` under a lock. Both builds (Debug + Release) compile with zero warnings.
