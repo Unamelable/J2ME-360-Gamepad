@@ -100,6 +100,8 @@ public partial class MainWindow : Window
         _poller.ComboTriggered += OnComboTriggered;
         _poller.ComboModifierActive += OnComboModifierActive;
         _poller.ComboModifierInactive += OnComboModifierInactive;
+        _poller.ComboConfirmationPending += OnComboConfirmationPending;
+        _poller.ComboConfirmationCancelled += OnComboConfirmationCancelled;
         _profiles.ProfilesChanged += OnProfilesChanged;
 
         RefreshProfileList();
@@ -269,6 +271,8 @@ public partial class MainWindow : Window
             BackCyclesCheckbox.IsChecked = appSettings.BackCycles;
             SkipDefaultCheckbox.IsChecked = appSettings.SkipDefault;
             DisableComboModifierOSDCheckbox.IsChecked = appSettings.DisableComboModifierOSD;
+            ComboConfirmationHoldCheckbox.IsChecked = appSettings.ComboConfirmationHold;
+            _poller.ComboConfirmationHold = appSettings.ComboConfirmationHold;
             ComboPerProfileCheckbox.IsChecked = appSettings.ComboPerProfile;
 
             ApplyComboSettingsFromProfile();
@@ -398,6 +402,7 @@ public partial class MainWindow : Window
         s.BackCycles = BackCyclesCheckbox.IsChecked == true;
         s.SkipDefault = SkipDefaultCheckbox.IsChecked == true;
         s.DisableComboModifierOSD = DisableComboModifierOSDCheckbox.IsChecked == true;
+        s.ComboConfirmationHold = ComboConfirmationHoldCheckbox.IsChecked == true;
         s.ComboPerProfile = ComboPerProfileCheckbox.IsChecked == true;
         s.Save();
 
@@ -541,6 +546,38 @@ public partial class MainWindow : Window
         _poller.DiagonalDelayHoldCardinals = hold;
         DiagDelayHoldCheckbox.IsChecked = hold;
         DiagDelayHoldCheckbox.IsEnabled = dirDelayMs == 0;
+    }
+
+    private void ComboConfirmationHold_Changed(object sender, RoutedEventArgs e)
+    {
+        bool hold = ComboConfirmationHoldCheckbox.IsChecked == true;
+        _poller.ComboConfirmationHold = hold;
+        var s = Models.AppSettings.Load();
+        s.ComboConfirmationHold = hold;
+        s.Save();
+    }
+
+    private void OnComboConfirmationPending(string osdText)
+    {
+        Dispatcher.Invoke(() =>
+        {
+            _overlay.HideComboModifier();
+            _overlay.Show();
+            _overlay.ShowComboConfirmation(osdText);
+        });
+    }
+
+    private void OnComboConfirmationCancelled()
+    {
+        Dispatcher.Invoke(() =>
+        {
+            _overlay.HideComboConfirmation();
+            if (DisableComboModifierOSDCheckbox.IsChecked != true)
+            {
+                _overlay.HideComboModifier();
+                _overlay.ShowComboModifier();
+            }
+        });
     }
 
     private void ComboPerProfile_Changed(object sender, RoutedEventArgs e)
@@ -884,6 +921,7 @@ public partial class MainWindow : Window
         Dispatcher.Invoke(() =>
         {
             if (DisableComboModifierOSDCheckbox.IsChecked == true) return;
+            _overlay.HideComboConfirmation();
             _overlay.HideComboModifier();
             _overlay.Show();
             _overlay.ShowOsd(osdText);
@@ -1567,8 +1605,11 @@ public partial class MainWindow : Window
                 bool running = System.Diagnostics.Process.GetProcessesByName("java").Length > 0;
                 if (running)
                     _javaSeenOnce = true;
-                else if (_javaSeenOnce && !Dispatcher.HasShutdownStarted)
-                    Dispatcher.Invoke(() => { ShutdownCleanup(); Close(); });
+                else if (_javaSeenOnce)
+                    Dispatcher.Invoke(() => {
+                        bool stillGone = System.Diagnostics.Process.GetProcessesByName("java").Length == 0;
+                        if (stillGone) { ShutdownCleanup(); Close(); }
+                    });
             }
             catch { }
         };

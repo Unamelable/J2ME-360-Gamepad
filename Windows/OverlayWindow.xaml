@@ -52,6 +52,23 @@
                        TextAlignment="Center" />
         </Border>
 
+        <Border x:Name="ConfirmationOsdBorder"
+                HorizontalAlignment="Center"
+                VerticalAlignment="Center"
+                Background="#80003300"
+                CornerRadius="8"
+                Padding="20,10"
+                Opacity="0">
+            <TextBlock x:Name="ConfirmationOsdText"
+                       Foreground="Lime"
+                       FontSize="28"
+                       FontWeight="Bold"
+                       HorizontalAlignment="Center"
+                       VerticalAlignment="Center"
+                       Text=""
+                       TextAlignment="Center" />
+        </Border>
+
         <Border x:Name="OsdBorder"
                 HorizontalAlignment="Center"
                 VerticalAlignment="Center"

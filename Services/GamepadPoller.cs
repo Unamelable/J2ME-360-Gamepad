@@ -37,6 +37,15 @@ public class GamepadPoller : IDisposable
     private readonly HashSet<ushort> _comboHeldKeys = new();
     private readonly Dictionary<string, bool> _comboWasPressed = new();
 
+    // Combo confirmation hold state
+    public bool ComboConfirmationHold { get; set; }
+    private bool _confirmActive;
+    private string _confirmComboName = "";
+    private string _confirmOsdName = "";
+    private long _confirmStartTickMs;
+    private bool _confirmTriggerQueued;
+    private const long ComboConfirmationDelayMs = 1000;
+
 
     private ushort _currentAHeldKey;
     private ushort _currentBHeldKey;
@@ -161,6 +170,8 @@ public class GamepadPoller : IDisposable
     public event Action<string>? ComboTriggered;
     public event Action<string>? ComboModifierActive;
     public event Action? ComboModifierInactive;
+    public event Action<string>? ComboConfirmationPending;
+    public event Action? ComboConfirmationCancelled;
 
     public DPadMode CurrentDPadMode
     {
@@ -576,21 +587,7 @@ public class GamepadPoller : IDisposable
                 _comboWasPressed[prefix + btn] = false;
                 continue;
             }
-
-            bool pressed = true;
-            string comboName = prefix + btn;
-            _comboWasPressed.TryGetValue(comboName, out bool wasPressed);
-
-            if (pressed && !wasPressed)
-            {
-                _comboWasPressed[comboName] = true;
-                TriggerCombo(comboName, isDefault);
-            }
-            else if (!pressed && wasPressed)
-            {
-                _comboWasPressed[comboName] = false;
-                EndComboKeys();
-            }
+            ProcessComboButton(prefix + btn, true, isDefault);
         }
 
         foreach (string btn in ComboExecButtons)
@@ -601,21 +598,7 @@ public class GamepadPoller : IDisposable
                 _comboWasPressed[prefix + btn] = false;
                 continue;
             }
-
-            bool pressed = true;
-            string comboName = prefix + btn;
-            _comboWasPressed.TryGetValue(comboName, out bool wasPressed);
-
-            if (pressed && !wasPressed)
-            {
-                _comboWasPressed[comboName] = true;
-                TriggerCombo(comboName, isDefault);
-            }
-            else if (!pressed && wasPressed)
-            {
-                _comboWasPressed[comboName] = false;
-                EndComboKeys();
-            }
+            ProcessComboButton(prefix + btn, true, isDefault);
         }
     }
 
@@ -738,6 +721,10 @@ public class GamepadPoller : IDisposable
         _dinputWasPressed.Clear();
         _dinputHeldKeys.Clear();
         _pendingCardinalDelayKey = DPadKey.None;
+        _confirmActive = false;
+        _confirmComboName = "";
+        _confirmOsdName = "";
+        _confirmTriggerQueued = false;
         EndComboModifier();
         _lastDInputButtons = 0;
         _directInput.Dispose();
@@ -1170,6 +1157,85 @@ public class GamepadPoller : IDisposable
     private static readonly string[] ComboFaceButtons = { "Y", "X", "A", "B" };
     private static readonly string[] ComboExecButtons = { "Start", "Back" };
 
+    private string GetComboOsdName(string comboName)
+    {
+        if (_comboSettings.OSDNames.TryGetValue(comboName, out var n) && !string.IsNullOrEmpty(n))
+            return n;
+        if (_comboSettings.Actions.TryGetValue(comboName, out var keys) && keys.Count > 0)
+            return string.Join("+", keys.Select(k => GetKeyDisplayName(k)));
+        if (_comboSettings.ExecPaths.TryGetValue(comboName, out var execPath) && !string.IsNullOrEmpty(execPath))
+            return System.IO.Path.GetFileName(execPath);
+        return comboName;
+    }
+
+    private void ProcessComboButton(string comboName, bool pressed, bool isDefault)
+    {
+        _comboWasPressed.TryGetValue(comboName, out bool wasPressed);
+
+        if (ComboConfirmationHold)
+        {
+            if (_confirmActive && _confirmComboName == comboName)
+            {
+                if (pressed && _activeComboModifier != ComboModifier.None)
+                {
+                    if (!_confirmTriggerQueued &&
+                        (_stopwatch.ElapsedMilliseconds - _confirmStartTickMs) >= ComboConfirmationDelayMs)
+                    {
+                        _comboWasPressed[comboName] = true;
+                        _confirmTriggerQueued = true;
+                        TriggerCombo(comboName, isDefault);
+                    }
+                }
+                else
+                {
+                    _confirmActive = false;
+                    _confirmComboName = "";
+                    _confirmOsdName = "";
+                    _confirmTriggerQueued = false;
+                    ComboConfirmationCancelled?.Invoke();
+                }
+                return;
+            }
+
+            if (pressed && !wasPressed)
+            {
+                bool hasActions = _comboSettings.Actions.TryGetValue(comboName, out var act) && act.Count > 0;
+                bool hasExec = _comboSettings.ExecPaths.TryGetValue(comboName, out var exe) && !string.IsNullOrEmpty(exe);
+                if (!hasActions && !hasExec)
+                {
+                    _comboWasPressed[comboName] = true;
+                    return;
+                }
+                _confirmActive = true;
+                _confirmComboName = comboName;
+                _confirmOsdName = GetComboOsdName(comboName);
+                _confirmStartTickMs = _stopwatch.ElapsedMilliseconds;
+                _confirmTriggerQueued = false;
+                ComboConfirmationPending?.Invoke(_confirmOsdName);
+                return;
+            }
+
+            if (!pressed && wasPressed)
+            {
+                _comboWasPressed[comboName] = false;
+                EndComboKeys();
+            }
+        }
+        else
+        {
+            if (pressed && !wasPressed)
+            {
+                _comboWasPressed[comboName] = true;
+                TriggerCombo(comboName, isDefault);
+            }
+            else if (!pressed && wasPressed)
+            {
+                _comboWasPressed[comboName] = false;
+                EndComboKeys();
+            }
+        }
+    }
+
     private void ProcessComboXInput(GamepadState current, string prefix, bool isDefault)
     {
         ComboModifier mod = prefix == "RB+LB+" ? ComboModifier.RbLb : ComboModifier.RtLt;
@@ -1199,20 +1265,7 @@ public class GamepadPoller : IDisposable
                 "A" => current.A, "B" => current.B,
                 _ => false
             };
-
-            string comboName = prefix + btn;
-            _comboWasPressed.TryGetValue(comboName, out bool wasPressed);
-
-            if (pressed && !wasPressed)
-            {
-                _comboWasPressed[comboName] = true;
-                TriggerCombo(comboName, isDefault);
-            }
-            else if (!pressed && wasPressed)
-            {
-                _comboWasPressed[comboName] = false;
-                EndComboKeys();
-            }
+            ProcessComboButton(prefix + btn, pressed, isDefault);
         }
 
         foreach (string btn in ComboExecButtons)
@@ -1222,20 +1275,7 @@ public class GamepadPoller : IDisposable
                 "Start" => current.Start, "Back" => current.Back,
                 _ => false
             };
-
-            string comboName = prefix + btn;
-            _comboWasPressed.TryGetValue(comboName, out bool wasPressed);
-
-            if (pressed && !wasPressed)
-            {
-                _comboWasPressed[comboName] = true;
-                TriggerCombo(comboName, isDefault);
-            }
-            else if (!pressed && wasPressed)
-            {
-                _comboWasPressed[comboName] = false;
-                EndComboKeys();
-            }
+            ProcessComboButton(prefix + btn, pressed, isDefault);
         }
     }
 
@@ -1317,10 +1357,21 @@ public class GamepadPoller : IDisposable
     {
         if (_activeComboModifier == ComboModifier.None)
             return;
+        CancelComboConfirmation();
         _activeComboModifier = ComboModifier.None;
         EndComboKeys();
         _comboWasPressed.Clear();
         ComboModifierInactive?.Invoke();
+    }
+
+    private void CancelComboConfirmation()
+    {
+        if (!_confirmActive) return;
+        _confirmActive = false;
+        _confirmComboName = "";
+        _confirmOsdName = "";
+        _confirmTriggerQueued = false;
+        ComboConfirmationCancelled?.Invoke();
     }
 
     private static string GetKeyDisplayName(ushort vk)

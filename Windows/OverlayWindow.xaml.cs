@@ -50,6 +50,7 @@ public partial class OverlayWindow : Window
         _disconnectedAnimation = null;
         DisconnectedBorder.BeginAnimation(OpacityProperty, null);
         ComboModifierBorder.BeginAnimation(OpacityProperty, null);
+        ConfirmationOsdBorder.BeginAnimation(OpacityProperty, null);
         OsdBorder.BeginAnimation(OpacityProperty, null);
         OsdText.BeginAnimation(OpacityProperty, null);
     }
@@ -94,6 +95,8 @@ public partial class OverlayWindow : Window
         ClearAnimations();
         DisconnectedBorder.Opacity = 0;
         OsdBorder.Opacity = 0;
+        ConfirmationOsdBorder.Opacity = 0;
+        ConfirmationOsdText.Text = "";
         ComboModifierText.Text = "Press combo key...";
         ComboModifierBorder.Opacity = 0;
 
@@ -124,12 +127,34 @@ public partial class OverlayWindow : Window
         ComboModifierText.Text = "";
     }
 
+    public void ShowComboConfirmation(string text)
+    {
+        ClearAnimations();
+        DisconnectedBorder.Opacity = 0;
+        ComboModifierBorder.Opacity = 0;
+        ComboModifierText.Text = "";
+        OsdBorder.Opacity = 0;
+        OsdText.Text = "";
+        _lastOsdMessage = text;
+        ConfirmationOsdText.Text = text;
+        ConfirmationOsdBorder.Opacity = 0.7;
+    }
+
+    public void HideComboConfirmation()
+    {
+        ClearAnimations();
+        ConfirmationOsdBorder.Opacity = 0;
+        ConfirmationOsdText.Text = "";
+    }
+
     public void ShowOsd(string text)
     {
         ClearAnimations();
         DisconnectedBorder.Opacity = 0;
         ComboModifierBorder.Opacity = 0;
         ComboModifierText.Text = "";
+        ConfirmationOsdBorder.Opacity = 0;
+        ConfirmationOsdText.Text = "";
         _lastOsdMessage = text;
         OsdText.Text = text;
         OsdText.Opacity = 1;
@@ -163,6 +188,8 @@ public partial class OverlayWindow : Window
     {
         ClearAnimations();
         DisconnectedBorder.Opacity = 0;
+        ConfirmationOsdBorder.Opacity = 0;
+        ConfirmationOsdText.Text = "";
 
         OsdText.Text = oldText;
         OsdText.Opacity = 1;

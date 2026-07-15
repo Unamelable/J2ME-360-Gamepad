@@ -93,6 +93,11 @@
                               Margin="0,4,0,0"
                               Checked="DisableComboModifierOSD_Changed"
                               Unchecked="DisableComboModifierOSD_Changed"/>
+                    <CheckBox x:Name="ComboConfirmationHoldCheckbox"
+                              Content="Confirmation combo-hold"
+                              Margin="0,4,0,0"
+                              Checked="ComboConfirmationHold_Changed"
+                              Unchecked="ComboConfirmationHold_Changed"/>
                 </StackPanel>
                 <StackPanel Grid.Column="1">
                     <TextBlock Text="Current Profile:" FontWeight="Bold" Margin="0,0,0,5"/>
