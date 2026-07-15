@@ -204,7 +204,7 @@ Maps action names to DInput button indices. Serializable as JSON.
 
 Centralized application settings stored as a single JSON file (`%APPDATA%\J2MEGamepad\app_settings.json`).
 
-**Properties**: `Version`, `StartMinimized`, `TerminateIfKemulatorClosed`, `TerminateWarningHidden`, `DiagonalDelayMs`, `DirectionalDelayMs`, `DiagonalDelayHold` (default true), `DiagonalDelayPerProfile`, `BackCycles`, `SkipDefault`, `ComboPerProfile`, `DisableComboModifierOSD`, `ComboConfirmationHold`, `FirstRunCompleted`, `CustomWarningHidden`, `KeysFontSize` (18), `KeysWindowWidth` (593), `KeysWindowHeight` (682).
+**Properties**: `Version`, `StartMinimized`, `TerminateIfKemulatorClosed`, `TerminateWarningHidden`, `DiagonalDelayMs`, `DirectionalDelayMs`, `DiagonalDelayHold` (default true), `DiagonalDelayPerProfile`, `BackCycles`, `SkipDefault`, `ComboPerProfile`, `DisableComboModifierOSD`, `ComboConfirmationHold`, `LeftThumbIsComboModifier`, `RightThumbIsComboModifier`, `FirstRunCompleted`, `CustomWarningHidden`, `KeysFontSize` (18), `KeysWindowWidth` (593), `KeysWindowHeight` (682).
 
 **Migration**: On first load (version 0), migrates from legacy individual txt files (`diagdelay.txt`, `directional_delay.txt`, `diaghold.txt`, `diagperprofile.txt`, `comboperprofile.txt`, `disable_combo_modifier_osd.txt`, `terminate.txt`, `terminate_warning_hidden.txt`, `start_minimized.txt`, `firstrun.txt`, `custom_warning_hidden.txt`, `keysfont.txt`, `keyssize.txt`) and saves as v1 JSON.
 
@@ -268,6 +268,8 @@ JSON-serializable profile class.
 
 | Property                               | Type                         | Description                                               |
 | -------------------------------------- | ---------------------------- | --------------------------------------------------------- |
+| `LeftThumbIsComboModifier`             | `bool`                       | When true, Left Stick Button acts as a combo modifier     |
+| `RightThumbIsComboModifier`            | `bool`                       | When true, Right Stick Button acts as a combo modifier    |
 | `ComboActions`                         | `Dictionary<string, List<ushort>>` | Combo modifier + face-button → key sequence         |
 | `ComboOSDNames`                        | `Dictionary<string, string>` | Custom OSD display names for combos                       |
 | `ComboExecPaths`                       | `Dictionary<string, string>` | Executable paths for combo launches                       |
@@ -366,7 +368,7 @@ Core polling engine. Runs at 8ms (125 Hz) via `System.Timers.Timer`. Alternates 
 - XInput detection and active polling run on alternating ticks with DInput detection. When a WinMM device is found but XInput also responds, the poller upgrades to XInput mode.
 - DirectInput8 (`dinput8.dll`) COM interop is compiled in `DirectInputReader.cs` but **never called at runtime** — on many Windows 11 systems `DirectInput8Create`/`CoCreateInstance` fail with `0x80004002` (E_NOINTERFACE). WinMM (`winmm.dll` / `joyGetPosEx`) is the only active DInput path, confirmed working from Windows XP through 11.
 - WinMM detection is cached: when no controller is detected, scans are skipped for 500ms.
-- Combo modifier system: holding `RB+LB` or `RT+LT` simultaneously enables combo actions. Face buttons (Y/X/A/B) fire macro key sequences. Start/Back fire executable launches. Cached button indices ensure O(1) checks.
+- Combo modifier system: holding `RB+LB`, `RT+LT`, `LSB` (Left Stick Button), or `RSB` (Right Stick Button) enables combo actions when the corresponding "Is a combo-modifier" checkbox is checked. Face buttons (Y/X/A/B) fire macro key sequences. Start/Back fire executable launches (RB+LB/RT+LT modifiers only). Cached button indices ensure O(1) checks.
 
 **Fields** (selected)
 
@@ -374,12 +376,12 @@ Core polling engine. Runs at 8ms (125 Hz) via `System.Timers.Timer`. Alternates 
 - `_controllerType` — current type: `None`, `XInput`, or `DInput`
 - `_tryXInputNext` — alternates XInput/WinMM detection each tick when no controller
 - `_*WasPressed` / `_current*HeldKey` — per-button edge tracking for A/B/X/Y/LB/RB/LT/RT/Back/Start/LeftThumb/RightThumb
-- `_activeComboModifier` — combo state machine (`None`/`RbLb`/`RtLt`)
+- `_activeComboModifier` — combo state machine (`None`/`RbLb`/`RtLt`/`Lsb`/`Rsb`)
 - `_comboHeldKeys` / `_comboWasPressed` — combo key tracking
 - `_dinputMapping`, `_dinputCalibration`, `_comboSettings` — DInput+combo config
 - `_dinputButtonToAction` — reverse mapping (button index → action name)
 - `_dinputWasPressed`, `_dinputHeldKeys` — DInput edge tracking
-- Cached DInput indices: `_dinputBackIdx`, `_dinputStartIdx`, `_dinputLeftThumbIdx`, `_dinputLBIdx`, `_dinputRBIdx`, `_dinputLTIdx`, `_dinputRTIdx`
+- Cached DInput indices: `_dinputBackIdx`, `_dinputStartIdx`, `_dinputLeftThumbIdx`, `_dinputRightThumbIdx`, `_dinputLBIdx`, `_dinputRBIdx`, `_dinputLTIdx`, `_dinputRTIdx`
 - DPAD state machine fields: diagonal delay, diagonal crosstalk suppression, diagonal-to-cardinal suppression, cardinal delay
 
 **Properties**
@@ -398,6 +400,8 @@ Core polling engine. Runs at 8ms (125 Hz) via `System.Timers.Timer`. Alternates 
 | `DInputCalibration`          | Exposes current calibration data.                                                                                  |
 | `DirectInputReader`          | Exposes the (unused) DirectInput8 reader instance.                                                                 |
 | `DirectInputWindowHandle`    | HWND for SetCooperativeLevel (required on Windows XP).                                                             |
+| `LeftThumbIsComboModifier`   | When true, Left Stick Button acts as a combo modifier (LSB+Y/X/A/B).                                |
+| `RightThumbIsComboModifier`  | When true, Right Stick Button acts as a combo modifier (RSB+Y/X/A/B).                               |
 | `ComboConfirmationHold`      | When true, combo face/exec buttons require a 1-second hold before firing. During hold the OSD shows the combo name in green; releasing early cancels the action. |
 
 **Events**
@@ -410,7 +414,7 @@ Core polling engine. Runs at 8ms (125 Hz) via `System.Timers.Timer`. Alternates 
 | `DInputButtonPressed` | `int`    | Fired during DInput remapping when a button is pressed (button index).       |
 | `DInputModeChanged`   | `string` | Fired when DInput mode is first entered.                                     |
 | `ComboTriggered`      | `string` | Fired when a combo action is triggered (OSD display name).                   |
-| `ComboModifierActive` | `string` | Fired when RB+LB or RT+LT combo modifier is engaged.                         |
+| `ComboModifierActive` | `string` | Fired when RB+LB, RT+LT, LSB or RSB combo modifier is engaged.              |
 | `ComboModifierInactive` | (none) | Fired when combo modifier is released.                                       |
 | `ComboConfirmationPending` | `string` | Fired when combo confirmation hold starts (OSD display name).               |
 | `ComboConfirmationCancelled` | (none) | Fired when combo confirmation is cancelled (face button or modifier released before timer). |
@@ -422,12 +426,12 @@ Core polling engine. Runs at 8ms (125 Hz) via `System.Timers.Timer`. Alternates 
 | `Start()`/`Stop()`/`Dispose()`                                                                  | Lifecycle: start/stop timer, release all keys.                                                                                                                                               |
 | `Poll(...)`                                                                                     | **Internal.** Called every 8ms. When no controller: alternates `PollXInputDetection()`/`PollDInputDetection()` each tick. When active: calls `PollXInputActive()` or `PollDInputActive()`.   |
 | `PollXInputActive()`/`PollXInputDetection()`                                                    | **Internal.** XInput GetState at user index 0. On success, processes state. On disconnect, falls back to None and tries DInput next tick.                                                     |
-| `ProcessXInputState(XInputState)`                                                               | **Internal.** Builds GamepadState, processes DPAD, then checks combo modifiers (RB+LB / RT+LT). If combo active, routes to `ProcessComboXInput`; otherwise normal action/mode-switch path.   |
+| `ProcessXInputState(XInputState)`                                                               | **Internal.** Builds GamepadState, processes DPAD, then checks combo modifiers (RB+LB / RT+LT / LSB / RSB). If combo active, routes to `ProcessComboModifierXInput`; otherwise normal action/mode-switch path.   |
 | `PollDInput()`                                                                                  | **Internal.** WinMM-only path: enumerates `joyGetPosEx` for devices 0-15. On device found: if XInput also responds, upgrades to XInput mode. Otherwise loads config and enters DInput mode.  |
 | `LoadDInputConfig()`                                                                            | **Internal.** Loads DInput mapping, calibration, and combo settings from disk. Does NOT touch DirectInput8.                                                                                  |
 | `MakeStateFromJoyInfo(JOYINFOEX)`                                                               | **Internal.** Builds `GamepadState` from WinMM state via `UpdateFromDInput`.                                                                                                                 |
 | `ProcessDInput(GamepadState, JOYINFOEX?)`                                                       | **Internal.** Applies button-mapped D-Pad overrides, calls `ProcessDPad`, handles remapping capture, then processes combo or normal actions.                                                 |
-| `ProcessDInputCombo(uint buttons, string prefix)`                                               | **Internal.** DInput combo modifier logic: caches modifier type, releases shoulder keys, routes face/exec buttons to `TriggerCombo`.                                                          |
+| `ProcessDInputCombo(uint buttons, string prefix)`                                               | **Internal.** DInput combo modifier logic for all modifier types: caches modifier type, releases shoulder/thumb keys, routes face buttons to `ProcessComboButton`. Only RB+LB/RT+LT support Start/Back exec combos. |
 | `ProcessDInputActions(uint buttons)`                                                            | **Internal.** Iterates `_dinputButtonToAction` (skipping system + DPad actions), tracks edge transitions, sends key down/up via `KeyboardInjector`.                                           |
 | `ProcessDInputModeSwitches(uint buttons)`                                                       | **Internal.** Edge-detection for Back/Start/LeftThumb for mode/profile cycling.                                                                                                              |
 | `GetVKForDInputAction(string action)`                                                           | **Internal.** Maps DInput action names to virtual key codes. Default profile returns hardcoded values; others look up profile Mappings.                                                      |
@@ -438,7 +442,7 @@ Core polling engine. Runs at 8ms (125 Hz) via `System.Timers.Timer`. Alternates 
 | `GetCardinalKeys(DPadKey)`/`GetKeysForDPad(DPadKey)`                                            | **Internal.** Returns VK code arrays for pad/keypad/diagonal modes. Uses cached statics to avoid per-call allocation.                                                                        |
 | `ProcessActionButtons(GamepadState, bool)`/`ProcessShoulderButtons(GamepadState, bool)`         | **Internal.** Hold-button handlers for A/B/X/Y and LB/RB/LT/RT/LeftThumb/RightThumb. LeftThumb only emits key when mapped in non-Default profile.                                            |
 | `ProcessModeSwitches(GamepadState)`                                                             | **Internal.** XInput mode switches: Back=DPAD cycle/profile cycle, Start=profile forward, LeftStick=BackCycles toggle.                                                                       |
-| `ProcessComboXInput(GamepadState, string, bool)`                                                | **Internal.** XInput combo modifier logic — same pattern as DInput but reads XInput state directly.                                                                                          |
+| `ProcessComboModifierXInput(GamepadState, string, bool)`                                        | **Internal.** XInput combo modifier logic for all modifier types (RB+LB, RT+LT, LSB, RSB). Releases modifier-specific held keys on transition. Only RB+LB/RT+LT support Start/Back exec combos. Reads XInput state directly. |
 | `TriggerCombo(string comboName, bool isDefault)`                                                | **Internal.** Looks up combo in `_comboSettings`: if exec path found, validates extension (.exe/.bat/.cmd/.com/.ps1), launches via `Process.Start`. Otherwise sends key sequence via injector.|
 | `EndComboKeys()`/`EndComboModifier()`                                                           | **Internal.** Releases combo-held keys and resets modifier state.                                                                                                                            |
 | `ProcessHoldButton(bool, ref bool, ref ushort, Func<ushort>)`                                   | **Internal.** Hold-button edge handler: press on rising edge, release on falling.                                                                                                            |
@@ -638,6 +642,13 @@ Main configuration window. Fixed-size `ToolWindow`, `NoResize`. Strips minimize/
 | `DisconnectTimer_Tick(...)`                                                                                  | 60s timer                         | Changes disconnected overlay text to "WAITING FOR CONTROLLER..." after 60 seconds.                                                                                                                                                                                                                        |
 | `HideToTray()` / `ShowFromTray()` / `TrayIcon_DoubleClick(...)` / `StartMinimized()`                          | Tray lifecycle                    | Standard tray icon show/hide/start-minimized behavior.                                                                                                                                                                                                                                                    |
 
+**Thumb-specific XAML Elements**
+
+| Element                               | Default   | Description                                                                         |
+| ------------------------------------- | --------- | ----------------------------------------------------------------------------------- |
+| `ThumbComboModifierCheckbox`          | Collapsed | "Is a combo-modifier" checkbox, shown when LeftThumb or RightThumb is selected.     |
+| `ThumbWarningPanel`                   | Collapsed | Contains warning texts for LeftThumb (backcycles) and RightThumb (mode-dependent).  |
+
 **DInput-specific XAML Elements**
 
 | Element                                                    | Default   | Description                                                                       |
@@ -746,7 +757,7 @@ All action buttons use **hold behavior** (press on down, release on up), not tap
 | RB          | Numpad /                                          | Yes                    |
 | LT          | F1                                                | Yes                    |
 | RT          | F2                                                | Yes                    |
-| Right Stick | F3                                                | Yes                    |
+| Right Stick | F3 (PAD) / Numpad 5 (KEYPAD/DIAGONAL)             | Yes                    |
 | Left Stick  | (none in Default) / profile mapping               | Only in custom profile |
 | View/Back   | DPAD cycle (or profile backward)                  | No (system)            |
 | Start       | Profile cycle forward                             | No (system)            |
@@ -761,7 +772,7 @@ All action buttons use **hold behavior** (press on down, release on up), not tap
 | **Profile swap (via gamepad)**<br/><br/><img width="550" alt="Profile swap animation" src="https://github.com/user-attachments/assets/0598ee6f-2113-48af-a84c-94a5458af455" /> | Crossfade old name → new name | ~1.5s |
 | **Combo triggered (key sequence / exec launch)**<br/><br/><img width="550" alt="J2MEGamepad_gSxtZ7kQUW" src="https://github.com/user-attachments/assets/154254e2-872e-4eff-8cee-88be87558251" /> | Fade in → hold → fade out | ~1.5s |
 | **Combo modifier active (RB+LB / RT+LT)**<br/><br/><img width="550" alt="J2MEGamepad_MBweB5tliq" src="https://github.com/user-attachments/assets/1fb8e81e-9d3d-41d5-8025-98a9f86dce1e" /> | Semi-transparent overlay box | While held |
-| **Combo confirmation hold**<br/><br/><img width="550" alt="J2MEGamepad_YfTs2pitYF" src="https://github.com/user-attachments/assets/52d57ea8-a16c-49dd-a932-d363e0d7b885" /> | Static green overlay box with combo name | Up to 1s (until confirmed or cancelled) |
+| **Combo confirmation hold** | Static green overlay box with combo name | Up to 1s (until confirmed or cancelled) |
 | **Controller disconnected**<br/><br/><img width="550" alt="Controller disconnected animation" src="https://github.com/user-attachments/assets/90300b3c-b334-4f15-bcfd-f27c90b3ab21" /> | Infinite yellow pulse (0→0.8→0) | 2.5s per cycle |
 | Controller reconnected | Immediate hide | Instant |
 
@@ -834,7 +845,7 @@ Alternating each 8ms tick:
 - "Skip Default" cycling requires 2+ user profiles
 - Profile names: max 18 characters, auto-named "Profile 1", "Profile 2", etc.
 - Thread safety: all list access under `lock(_lock)`, `Profiles` getter returns a copy
-- Per-profile settings: diagonal delay, directional delay, hold-cardinals flag, combo actions/OSD names/exec paths (all optional)
+- Per-profile settings: diagonal delay, directional delay, hold-cardinals flag, combo actions/OSD names/exec paths, LeftThumbIsComboModifier, RightThumbIsComboModifier (all optional)
 
 ---
 
@@ -846,14 +857,29 @@ The application supports macro key sequences and executable launching via combo 
 
 - **RB+LB**: Hold both right and left bumpers simultaneously to activate combo modifier
 - **RT+LT**: Hold both right and left triggers simultaneously to activate combo modifier
+- **LSB** (Left Stick Button): When "Is a combo-modifier" is checked, pressing LSB activates the LSB combo modifier
+- **RSB** (Right Stick Button): When "Is a combo-modifier" is checked, pressing RSB activates the RSB combo modifier
 
-When a modifier is active, the shoulder/trigger keys are released (preventing spurious output) and the following face/action buttons trigger combos:
+When a modifier is active, the shoulder/trigger/thumb keys are released (preventing spurious output) and the following face/action buttons trigger combos:
 
-| Button | Behavior                                                         |
-| ------ | ---------------------------------------------------------------- |
-| Y/X/A/B | Sends configured key sequence (list of virtual key codes)       |
-| Start  | Launches configured executable                                   |
-| Back   | Launches configured executable                                   |
+| Button             | Behavior                                                         |
+| ------------------ | ---------------------------------------------------------------- |
+| Y/X/A/B            | Sends configured key sequence (list of virtual key codes)       |
+| Start (RB+LB/RT+LT only) | Launches configured executable                                   |
+| Back  (RB+LB/RT+LT only) | Launches configured executable                                   |
+
+LSB/RSB modifiers support face button combos (Y/X/A/B) only — Start/Back exec combos are exclusive to RB+LB/RT+LT modifiers.
+
+The "Is a combo-modifier" checkbox is available per thumb button and follows the same per-profile / global setting pattern as other combo settings.
+
+### Available Combo Actions
+
+| Modifier     | Face Buttons              | Exec Buttons (Start/Back) |
+| ------------ | ------------------------- | ------------------------- |
+| RB+LB        | RB+LB+Y / X / A / B       | RB+LB+Start / Back        |
+| RT+LT        | RT+LT+Y / X / A / B       | RT+LT+Start / Back        |
+| RSB          | RSB+Y / X / A / B         | —                         |
+| LSB          | LSB+Y / X / A / B         | —                         |
 
 ### Configuration
 
