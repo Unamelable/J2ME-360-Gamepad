@@ -273,6 +273,8 @@ public partial class MainWindow : Window
             DisableComboModifierOSDCheckbox.IsChecked = appSettings.DisableComboModifierOSD;
             ComboConfirmationHoldCheckbox.IsChecked = appSettings.ComboConfirmationHold;
             _poller.ComboConfirmationHold = appSettings.ComboConfirmationHold;
+            _poller.LeftThumbIsComboModifier = appSettings.LeftThumbIsComboModifier;
+            _poller.RightThumbIsComboModifier = appSettings.RightThumbIsComboModifier;
             ComboPerProfileCheckbox.IsChecked = appSettings.ComboPerProfile;
 
             ApplyComboSettingsFromProfile();
@@ -404,6 +406,11 @@ public partial class MainWindow : Window
         s.DisableComboModifierOSD = DisableComboModifierOSDCheckbox.IsChecked == true;
         s.ComboConfirmationHold = ComboConfirmationHoldCheckbox.IsChecked == true;
         s.ComboPerProfile = ComboPerProfileCheckbox.IsChecked == true;
+        if (ComboPerProfileCheckbox.IsChecked != true)
+        {
+            s.LeftThumbIsComboModifier = _poller.LeftThumbIsComboModifier;
+            s.RightThumbIsComboModifier = _poller.RightThumbIsComboModifier;
+        }
         s.Save();
 
         if (DiagDelayPerProfileCheckbox.IsChecked == true)
@@ -588,6 +595,42 @@ public partial class MainWindow : Window
         ApplyComboSettingsFromProfile();
     }
 
+    private bool GetCurrentThumbIsComboModifier(string thumbName)
+    {
+        return thumbName == "LeftThumb" ? _poller.LeftThumbIsComboModifier : _poller.RightThumbIsComboModifier;
+    }
+
+    private void ThumbComboModifierCheckbox_Changed(object sender, RoutedEventArgs e)
+    {
+        if (_selectedKeyName == null || (!ComboActionNames.Contains(_selectedKeyName) && _selectedKeyName != "LeftThumb" && _selectedKeyName != "RightThumb"))
+            return;
+
+        bool isChecked = ThumbComboModifierCheckbox.IsChecked == true;
+
+        if (ComboPerProfileCheckbox.IsChecked == true)
+        {
+            var profile = _profiles.CurrentProfile;
+            if (_selectedKeyName == "LeftThumb")
+                profile.LeftThumbIsComboModifier = isChecked;
+            else
+                profile.RightThumbIsComboModifier = isChecked;
+            _profiles.SaveProfile(profile);
+            _poller.LeftThumbIsComboModifier = profile.LeftThumbIsComboModifier;
+            _poller.RightThumbIsComboModifier = profile.RightThumbIsComboModifier;
+        }
+        else
+        {
+            var s = Models.AppSettings.Load();
+            if (_selectedKeyName == "LeftThumb")
+                s.LeftThumbIsComboModifier = isChecked;
+            else
+                s.RightThumbIsComboModifier = isChecked;
+            s.Save();
+            _poller.LeftThumbIsComboModifier = s.LeftThumbIsComboModifier;
+            _poller.RightThumbIsComboModifier = s.RightThumbIsComboModifier;
+        }
+    }
+
     private void ApplyComboSettingsFromProfile()
     {
         if (ComboPerProfileCheckbox.IsChecked == true)
@@ -597,11 +640,16 @@ public partial class MainWindow : Window
             _comboSettings.OSDNames = new Dictionary<string, string>(profile.ComboOSDNames);
             _comboSettings.ExecPaths = new Dictionary<string, string>(profile.ComboExecPaths);
             _poller.ApplyComboSettings(profile.ComboActions, profile.ComboOSDNames, profile.ComboExecPaths);
+            _poller.LeftThumbIsComboModifier = profile.LeftThumbIsComboModifier;
+            _poller.RightThumbIsComboModifier = profile.RightThumbIsComboModifier;
         }
         else
         {
             _comboSettings = ComboSettings.Load();
             _poller.ReloadComboSettings();
+            var s = Models.AppSettings.Load();
+            _poller.LeftThumbIsComboModifier = s.LeftThumbIsComboModifier;
+            _poller.RightThumbIsComboModifier = s.RightThumbIsComboModifier;
         }
 
         if (_selectedKeyName != null)
@@ -629,6 +677,8 @@ public partial class MainWindow : Window
             profile.ComboActions = new Dictionary<string, List<ushort>>(_comboSettings.Actions);
             profile.ComboOSDNames = new Dictionary<string, string>(_comboSettings.OSDNames);
             profile.ComboExecPaths = new Dictionary<string, string>(_comboSettings.ExecPaths);
+            profile.LeftThumbIsComboModifier = _poller.LeftThumbIsComboModifier;
+            profile.RightThumbIsComboModifier = _poller.RightThumbIsComboModifier;
             _profiles.SaveProfile(profile);
             _poller.ApplyComboSettings(profile.ComboActions, profile.ComboOSDNames, profile.ComboExecPaths);
         }
@@ -1779,7 +1829,9 @@ public partial class MainWindow : Window
             var profile = new KeyMapProfile
             {
                 Name = name,
-                Mappings = new System.Collections.Generic.Dictionary<string, ushort>(_profiles.CurrentProfile.Mappings)
+                Mappings = new System.Collections.Generic.Dictionary<string, ushort>(_profiles.CurrentProfile.Mappings),
+                LeftThumbIsComboModifier = _profiles.CurrentProfile.LeftThumbIsComboModifier,
+                RightThumbIsComboModifier = _profiles.CurrentProfile.RightThumbIsComboModifier,
             };
             if (DiagDelayPerProfileCheckbox.IsChecked == true)
             {
@@ -1881,6 +1933,8 @@ public partial class MainWindow : Window
     {
         "RB+LB+Y", "RB+LB+X", "RB+LB+A", "RB+LB+B",
         "RT+LT+Y", "RT+LT+X", "RT+LT+A", "RT+LT+B",
+        "RSB+Y", "RSB+X", "RSB+A", "RSB+B",
+        "LSB+Y", "LSB+X", "LSB+A", "LSB+B",
     };
 
     private static readonly HashSet<string> ComboExecActionNames = new()
@@ -1922,7 +1976,19 @@ public partial class MainWindow : Window
                 IsDefaultCheckbox.IsChecked = !_profiles.CurrentProfile.Mappings.ContainsKey(_selectedKeyName ?? "");
             }
 
-            LeftThumbWarningText.Visibility = _selectedKeyName == "LeftThumb" ? Visibility.Visible : Visibility.Collapsed;
+            bool isLeftThumb = _selectedKeyName == "LeftThumb";
+            bool isRightThumb = _selectedKeyName == "RightThumb";
+            bool isThumb = isLeftThumb || isRightThumb;
+            ThumbComboModifierCheckbox.Visibility = isThumb ? Visibility.Visible : Visibility.Collapsed;
+            ThumbWarningPanel.Visibility = isThumb ? Visibility.Visible : Visibility.Collapsed;
+            LeftThumbWarningText.Visibility = isLeftThumb ? Visibility.Visible : Visibility.Collapsed;
+            RightThumbWarningText.Visibility = isRightThumb ? Visibility.Visible : Visibility.Collapsed;
+
+            if (isThumb)
+            {
+                bool isComboMod = GetCurrentThumbIsComboModifier(_selectedKeyName!);
+                ThumbComboModifierCheckbox.IsChecked = isComboMod;
+            }
 
             UpdateCurrentMappingDisplay();
         }
@@ -1933,7 +1999,10 @@ public partial class MainWindow : Window
             KeyCaptureBox.Visibility = Visibility.Visible;
             DInputActionPanel.Visibility = _isDInputMode ? Visibility.Visible : Visibility.Collapsed;
             DInputDeadzonePanel.Visibility = _isDInputMode ? Visibility.Visible : Visibility.Collapsed;
+            ThumbComboModifierCheckbox.Visibility = Visibility.Collapsed;
+            ThumbWarningPanel.Visibility = Visibility.Collapsed;
             LeftThumbWarningText.Visibility = Visibility.Collapsed;
+            RightThumbWarningText.Visibility = Visibility.Collapsed;
         }
     }
 
@@ -2421,7 +2490,7 @@ public partial class MainWindow : Window
             "RB" => "Num /",
             "LT" => "F1",
             "RT" => "F2",
-            "RightThumb" => "F3",
+            "RightThumb" => "F3 / Num 5",
             "LeftThumb" => "Unassigned",
             _ => "Unknown"
         };

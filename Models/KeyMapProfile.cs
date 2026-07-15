@@ -31,6 +31,8 @@ public class KeyMapProfile
 
     public bool DiagonalDelayHoldCardinals { get; set; } = false;
 
+    public bool LeftThumbIsComboModifier { get; set; }
+    public bool RightThumbIsComboModifier { get; set; }
     public Dictionary<string, List<ushort>> ComboActions { get; set; } = new();
     public Dictionary<string, string> ComboOSDNames { get; set; } = new();
     public Dictionary<string, string> ComboExecPaths { get; set; } = new();

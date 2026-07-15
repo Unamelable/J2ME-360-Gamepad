@@ -32,7 +32,10 @@ public class GamepadPoller : IDisposable
     private bool _connected;
 
     // Combo modifier state
-    private enum ComboModifier { None, RbLb, RtLt }
+    private enum ComboModifier { None, RbLb, RtLt, Lsb, Rsb }
+
+    public bool LeftThumbIsComboModifier { get; set; }
+    public bool RightThumbIsComboModifier { get; set; }
     private ComboModifier _activeComboModifier = ComboModifier.None;
     private readonly HashSet<ushort> _comboHeldKeys = new();
     private readonly Dictionary<string, bool> _comboWasPressed = new();
@@ -140,6 +143,7 @@ public class GamepadPoller : IDisposable
     private int _dinputBackIdx = 8;
     private int _dinputStartIdx = 9;
     private int _dinputLeftThumbIdx = 10;
+    private int _dinputRightThumbIdx = 11;
     private int _dinputLBIdx = 4;
     private int _dinputRBIdx = 5;
     private int _dinputLTIdx = 6;
@@ -246,6 +250,7 @@ public class GamepadPoller : IDisposable
         _dinputBackIdx = _dinputMapping.ActionToButton.TryGetValue("Back", out int b) ? b : 8;
         _dinputStartIdx = _dinputMapping.ActionToButton.TryGetValue("Start", out int s) ? s : 9;
         _dinputLeftThumbIdx = _dinputMapping.ActionToButton.TryGetValue("LeftThumb", out int l) ? l : 10;
+        _dinputRightThumbIdx = _dinputMapping.ActionToButton.TryGetValue("RightThumb", out int r) ? r : 11;
         _dinputLBIdx = _dinputMapping.ActionToButton.TryGetValue("LB", out int lb) ? lb : 4;
         _dinputRBIdx = _dinputMapping.ActionToButton.TryGetValue("RB", out int rb) ? rb : 5;
         _dinputLTIdx = _dinputMapping.ActionToButton.TryGetValue("LT", out int lt) ? lt : 6;
@@ -351,11 +356,17 @@ public class GamepadPoller : IDisposable
             bool isDefault = _profiles.IsDefaultProfile;
             bool rbLbNow = current.LB && current.RB;
             bool rtLtNow = current.LT && current.RT;
+            bool lsbModNow = LeftThumbIsComboModifier && current.LeftThumb;
+            bool rsbModNow = RightThumbIsComboModifier && current.RightThumb;
 
-            if (rbLbNow || rtLtNow)
+            if (rbLbNow || rtLtNow || lsbModNow || rsbModNow)
             {
-                string prefix = rbLbNow ? "RB+LB+" : "RT+LT+";
-                ProcessComboXInput(current, prefix, isDefault);
+                string prefix;
+                if (lsbModNow) prefix = "LSB+";
+                else if (rsbModNow) prefix = "RSB+";
+                else if (rbLbNow) prefix = "RB+LB+";
+                else prefix = "RT+LT+";
+                ProcessComboModifierXInput(current, prefix, isDefault);
                 ProcessButtonEdge(current.Back, ref _backWasPressed, () => { });
                 ProcessButtonEdge(current.Start, ref _startWasPressed, () => { });
                 ProcessButtonEdge(current.LeftThumb, ref _leftThumbModeWasPressed, () => { });
@@ -530,13 +541,21 @@ public class GamepadPoller : IDisposable
         bool hasRb = _dinputRBIdx >= 0 && ((buttons >> _dinputRBIdx) & 1) != 0;
         bool hasLt = _dinputLTIdx >= 0 && ((buttons >> _dinputLTIdx) & 1) != 0;
         bool hasRt = _dinputRTIdx >= 0 && ((buttons >> _dinputRTIdx) & 1) != 0;
+        bool hasLsb = _dinputLeftThumbIdx >= 0 && ((buttons >> _dinputLeftThumbIdx) & 1) != 0;
+        bool hasRsb = _dinputRightThumbIdx >= 0 && ((buttons >> _dinputRightThumbIdx) & 1) != 0;
 
         bool rbLbNow = hasLb && hasRb;
         bool rtLtNow = hasLt && hasRt;
+        bool lsbModNow = LeftThumbIsComboModifier && hasLsb;
+        bool rsbModNow = RightThumbIsComboModifier && hasRsb;
 
-        if (rbLbNow || rtLtNow)
+        if (rbLbNow || rtLtNow || lsbModNow || rsbModNow)
         {
-            string prefix = rbLbNow ? "RB+LB+" : "RT+LT+";
+            string prefix;
+            if (lsbModNow) prefix = "LSB+";
+            else if (rsbModNow) prefix = "RSB+";
+            else if (rbLbNow) prefix = "RB+LB+";
+            else prefix = "RT+LT+";
             ProcessDInputCombo(buttons, prefix);
             bool backPressed = ((buttons >> _dinputBackIdx) & 1) != 0;
             bool startPressed = ((buttons >> _dinputStartIdx) & 1) != 0;
@@ -554,16 +573,24 @@ public class GamepadPoller : IDisposable
 
     private void ProcessDInputCombo(uint buttons, string prefix)
     {
-        ComboModifier mod = prefix == "RB+LB+" ? ComboModifier.RbLb : ComboModifier.RtLt;
+        ComboModifier mod = prefix switch
+        {
+            "RB+LB+" => ComboModifier.RbLb,
+            "RT+LT+" => ComboModifier.RtLt,
+            "LSB+" => ComboModifier.Lsb,
+            "RSB+" => ComboModifier.Rsb,
+            _ => ComboModifier.None
+        };
 
         if (_activeComboModifier != mod)
         {
             EndComboModifier();
             _activeComboModifier = mod;
-            // Release any held shoulder keys
+            // Release any held modifier keys
             foreach (var kvp in _dinputButtonToAction)
             {
-                if (kvp.Value == "LB" || kvp.Value == "RB" || kvp.Value == "LT" || kvp.Value == "RT")
+                if (kvp.Value == "LB" || kvp.Value == "RB" || kvp.Value == "LT" || kvp.Value == "RT" ||
+                    kvp.Value == "LeftThumb" || kvp.Value == "RightThumb")
                 {
                     if (_dinputHeldKeys.TryGetValue(kvp.Value, out var vk) && vk != 0)
                     {
@@ -590,15 +617,19 @@ public class GamepadPoller : IDisposable
             ProcessComboButton(prefix + btn, true, isDefault);
         }
 
-        foreach (string btn in ComboExecButtons)
+        // Only RB+LB and RT+LT support Start/Back exec combos
+        if (prefix == "RB+LB+" || prefix == "RT+LT+")
         {
-            int btnIdx;
-            if (!actionToButton.TryGetValue(btn, out btnIdx) || ((buttons >> btnIdx) & 1) == 0)
+            foreach (string btn in ComboExecButtons)
             {
-                _comboWasPressed[prefix + btn] = false;
-                continue;
+                int btnIdx;
+                if (!actionToButton.TryGetValue(btn, out btnIdx) || ((buttons >> btnIdx) & 1) == 0)
+                {
+                    _comboWasPressed[prefix + btn] = false;
+                    continue;
+                }
+                ProcessComboButton(prefix + btn, true, isDefault);
             }
-            ProcessComboButton(prefix + btn, true, isDefault);
         }
     }
 
@@ -698,7 +729,7 @@ public class GamepadPoller : IDisposable
                 "RB" => VK.Divide,
                 "LT" => VK.F1,
                 "RT" => VK.F2,
-                "RightThumb" => VK.F3,
+                "RightThumb" => _currentDPadMode == DPadMode.Pad ? VK.F3 : VK.NumPad5,
                 _ => 0
             };
         }
@@ -1148,7 +1179,9 @@ public class GamepadPoller : IDisposable
             isDefault ? VK.F2 : _profiles.CurrentProfile.GetValueOrDefault("RT", VK.F2));
 
         ProcessHoldButton(current.RightThumb, ref _rightThumbWasPressed, ref _currentRightThumbHeldKey, () =>
-            isDefault ? VK.F3 : _profiles.CurrentProfile.GetValueOrDefault("RightThumb", VK.F3));
+            isDefault
+                ? _currentDPadMode == DPadMode.Pad ? VK.F3 : VK.NumPad5
+                : _profiles.CurrentProfile.GetValueOrDefault("RightThumb", VK.F3));
 
         ProcessHoldButton(current.LeftThumb, ref _leftThumbWasPressed, ref _currentLeftThumbHeldKey, () =>
             isDefault ? (ushort)0 : _profiles.CurrentProfile.GetValueOrDefault("LeftThumb", (ushort)0));
@@ -1236,9 +1269,16 @@ public class GamepadPoller : IDisposable
         }
     }
 
-    private void ProcessComboXInput(GamepadState current, string prefix, bool isDefault)
+    private void ProcessComboModifierXInput(GamepadState current, string prefix, bool isDefault)
     {
-        ComboModifier mod = prefix == "RB+LB+" ? ComboModifier.RbLb : ComboModifier.RtLt;
+        ComboModifier mod = prefix switch
+        {
+            "RB+LB+" => ComboModifier.RbLb,
+            "RT+LT+" => ComboModifier.RtLt,
+            "LSB+" => ComboModifier.Lsb,
+            "RSB+" => ComboModifier.Rsb,
+            _ => ComboModifier.None
+        };
 
         if (_activeComboModifier != mod)
         {
@@ -1249,10 +1289,18 @@ public class GamepadPoller : IDisposable
                 if (_lbWasPressed) { _keyboard.ReleaseKey(_currentLBHeldKey); _lbWasPressed = false; _currentLBHeldKey = 0; }
                 if (_rbWasPressed) { _keyboard.ReleaseKey(_currentRBHeldKey); _rbWasPressed = false; _currentRBHeldKey = 0; }
             }
-            else
+            else if (prefix == "RT+LT+")
             {
                 if (_ltWasPressed) { _keyboard.ReleaseKey(_currentLTHeldKey); _ltWasPressed = false; _currentLTHeldKey = 0; }
                 if (_rtWasPressed) { _keyboard.ReleaseKey(_currentRTHeldKey); _rtWasPressed = false; _currentRTHeldKey = 0; }
+            }
+            else if (prefix == "LSB+")
+            {
+                if (_leftThumbWasPressed) { _keyboard.ReleaseKey(_currentLeftThumbHeldKey); _leftThumbWasPressed = false; _currentLeftThumbHeldKey = 0; }
+            }
+            else if (prefix == "RSB+")
+            {
+                if (_rightThumbWasPressed) { _keyboard.ReleaseKey(_currentRightThumbHeldKey); _rightThumbWasPressed = false; _currentRightThumbHeldKey = 0; }
             }
             ComboModifierActive?.Invoke(prefix.TrimEnd('+'));
         }
@@ -1268,14 +1316,18 @@ public class GamepadPoller : IDisposable
             ProcessComboButton(prefix + btn, pressed, isDefault);
         }
 
-        foreach (string btn in ComboExecButtons)
+        // Only RB+LB and RT+LT support Start/Back exec combos
+        if (prefix == "RB+LB+" || prefix == "RT+LT+")
         {
-            bool pressed = btn switch
+            foreach (string btn in ComboExecButtons)
             {
-                "Start" => current.Start, "Back" => current.Back,
-                _ => false
-            };
-            ProcessComboButton(prefix + btn, pressed, isDefault);
+                bool pressed = btn switch
+                {
+                    "Start" => current.Start, "Back" => current.Back,
+                    _ => false
+                };
+                ProcessComboButton(prefix + btn, pressed, isDefault);
+            }
         }
     }
 

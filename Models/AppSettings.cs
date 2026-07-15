@@ -21,6 +21,8 @@ public class AppSettings
     public bool ComboPerProfile { get; set; }
     public bool DisableComboModifierOSD { get; set; }
     public bool ComboConfirmationHold { get; set; }
+    public bool LeftThumbIsComboModifier { get; set; }
+    public bool RightThumbIsComboModifier { get; set; }
     public bool FirstRunCompleted { get; set; }
     public bool CustomWarningHidden { get; set; }
     public int KeysFontSize { get; set; } = 18;

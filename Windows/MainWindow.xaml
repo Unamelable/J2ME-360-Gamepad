@@ -207,6 +207,14 @@
                             <ListBoxItem Tag="RT+LT+X">RT+LT → X</ListBoxItem>
                             <ListBoxItem Tag="RT+LT+A">RT+LT → A</ListBoxItem>
                             <ListBoxItem Tag="RT+LT+B">RT+LT → B</ListBoxItem>
+                            <ListBoxItem Tag="RSB+Y">RSB → Y</ListBoxItem>
+                            <ListBoxItem Tag="RSB+X">RSB → X</ListBoxItem>
+                            <ListBoxItem Tag="RSB+A">RSB → A</ListBoxItem>
+                            <ListBoxItem Tag="RSB+B">RSB → B</ListBoxItem>
+                            <ListBoxItem Tag="LSB+Y">LSB → Y</ListBoxItem>
+                            <ListBoxItem Tag="LSB+X">LSB → X</ListBoxItem>
+                            <ListBoxItem Tag="LSB+A">LSB → A</ListBoxItem>
+                            <ListBoxItem Tag="LSB+B">LSB → B</ListBoxItem>
                             <ListBoxItem IsEnabled="False" FontWeight="Bold" Foreground="Gray">── Combo-Exec ──</ListBoxItem>
                             <ListBoxItem Tag="RB+LB+Start">RB+LB → Start</ListBoxItem>
                             <ListBoxItem Tag="RB+LB+Back">RB+LB → Back</ListBoxItem>
@@ -216,6 +224,7 @@
                     </Grid>
                     <Grid Grid.Column="1" Margin="0,0,8,0" VerticalAlignment="Top">
                         <Grid.RowDefinitions>
+                            <RowDefinition Height="Auto"/>
                             <RowDefinition Height="Auto"/>
                             <RowDefinition Height="Auto"/>
                             <RowDefinition Height="Auto"/>
@@ -294,15 +303,29 @@
                                         Click="OpenExecButton_Click"/>
                             </Grid>
                         </StackPanel>
-                        <TextBlock Grid.Row="5" x:Name="LeftThumbWarningText"
-                                   Visibility="Collapsed"
-                                   TextWrapping="Wrap"
-                                   Foreground="Red"
-                                   FontWeight="Bold"
-                                   FontSize="11"
-                                   Margin="0,8,0,0"
-                                   Text="This button is assigned to &quot;backcycles&quot;. If a key is assigned here, the backcycle function will be disabled!"/>
-                        <StackPanel Grid.Row="6" x:Name="DInputActionPanel"
+                        <CheckBox Grid.Row="5" x:Name="ThumbComboModifierCheckbox"
+                                  Content="Is a combo-modifier"
+                                  Margin="0,8,0,0"
+                                  Visibility="Collapsed"
+                                  Checked="ThumbComboModifierCheckbox_Changed"
+                                  Unchecked="ThumbComboModifierCheckbox_Changed"/>
+                        <StackPanel Grid.Row="6" x:Name="ThumbWarningPanel"
+                                    Visibility="Collapsed" Margin="0,8,0,0">
+                            <TextBlock x:Name="LeftThumbWarningText"
+                                       TextWrapping="Wrap"
+                                       Foreground="Red"
+                                       FontWeight="Bold"
+                                       FontSize="11"
+                                       Margin="0,0,0,4"
+                                       Text="This button is assigned to &quot;backcycles&quot;. If a key is assigned here, the backcycle function will be disabled!"/>
+                            <TextBlock x:Name="RightThumbWarningText"
+                                       TextWrapping="Wrap"
+                                       Foreground="Red"
+                                       FontWeight="Bold"
+                                       FontSize="11"
+                                       Text="The default behavior of RSB is to send F3 (PAD mode) or Numpad_5 (KEYPAD/PAD+DIAGONAL mode)."/>
+                        </StackPanel>
+                        <StackPanel Grid.Row="7" x:Name="DInputActionPanel"
                                     Visibility="Collapsed" Margin="0,8,0,0">
                             <TextBlock Text="DInput actions:" FontWeight="Bold" Margin="0,0,0,4"/>
                             <Grid>
@@ -320,7 +343,7 @@
                                         Click="CalibrateDpadButton_Click"/>
                             </Grid>
                         </StackPanel>
-                        <StackPanel Grid.Row="7" x:Name="DInputDeadzonePanel"
+                        <StackPanel Grid.Row="8" x:Name="DInputDeadzonePanel"
                                     Visibility="Collapsed" Margin="0,8,0,0">
                             <TextBlock Text="DInput deadzone:" FontWeight="Bold" Margin="0,0,0,3"/>
                             <Grid>
